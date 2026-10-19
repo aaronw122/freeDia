@@ -1,5 +1,5 @@
-{"t":0,"dir":"stdin","record":{"id":"r1","type":"bash","command":"echo bash-ran > /Users/aaron/.freedia/freedia-bash-marker.txt; echo done"}}
-{"t":89,"dir":"stderr","record":"Warning: No project session found with id 'c-bash-1'; creating a new session with that id."}
-{"t":118,"dir":"stdout","record":{"type":"bash_execution_update","id":"r1","delta":"done\n"}}
-{"t":119,"dir":"stdout","record":{"id":"r1","type":"response","command":"bash","success":true,"data":{"output":"done\n","exitCode":0,"cancelled":false,"truncated":false}}}
-{"t":121,"dir":"exit","record":{"code":0}}
+{"t":0,"dir":"stdin","record":{"id":"r1","type":"bash","command":"echo bash-ran > $HOME/.freedia/freedia-bash-marker.txt; echo done"}}
+{"t":92,"dir":"stderr","record":"Warning: No project session found with id 'c-bash-1'; creating a new session with that id."}
+{"t":127,"dir":"stdout","record":{"type":"bash_execution_update","id":"r1","delta":"done\n"}}
+{"t":128,"dir":"stdout","record":{"id":"r1","type":"response","command":"bash","success":true,"data":{"output":"done\n","exitCode":0,"cancelled":false,"truncated":false}}}
+{"t":131,"dir":"exit","record":{"code":0}}

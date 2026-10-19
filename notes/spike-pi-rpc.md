@@ -19,8 +19,11 @@ Everything below was observed on this machine unless marked `[INFERENCE]` or `[N
   - `[[recall]]` lists every user and assistant turn the model was sent.
   - Anything else echoes `[<model>] faux reply to: <prompt>`.
   - Env: `FREEDIA_FAUX_TPS` sets streaming speed (default 400 tokens/s; `0` means as fast as possible). `FREEDIA_FAUX_CONTEXT` sets the context window (default 128000).
-- `record.ts`: the scenario driver that produced every fixture and number in this note. It spawns `[process.execPath, cli.js, "--mode", "rpc", …]` with `BUN_BE_BUN=1`, as the helper will. Run it with `bun packages/helper/test/fixtures/pi/record.ts [scenario…]`.
+- `record.ts`: the scenario driver that produced every fixture and number in this note. It spawns `[process.execPath, cli.js, "--mode", "rpc", …]` with `BUN_BE_BUN=1`, as the helper will. Run it with `bun packages/helper/test/fixtures/pi/record.ts [--write-fixtures] [scenario…]`.
+  - It writes fixtures only with `--write-fixtures` (into this folder) or `FREEDIA_FIXTURE_DIR=<dir>`; by default it only prints results.
+  - It deletes its temp `--session-dir` on exit.
 - `*.jsonl` fixtures: one line per record, `{"t": <ms since spawn>, "dir": "stdin"|"stdout"|"stderr"|"exit", "record": <parsed JSON | stderr string | {code}>}`. A fake pi can replay `stdout` records once it has seen the matching `stdin` record.
+  - Machine-specific values are scrubbed when saving: the temp session dir becomes `$TMP/freedia-s1`, other temp paths `$TMP`, this folder `$FIXTURES`, the home dir `$HOME`, and Anthropic request ids `req_PLACEHOLDER`. The record shapes are not changed.
 
 | Fixture                       | What it captures                                                                                       |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------ |
@@ -34,6 +37,8 @@ Everything below was observed on this machine unless marked `[INFERENCE]` or `[N
 | `resume-create.jsonl` / `resume-continue.jsonl` | create a chat, exit, respawn with the same `--session-id`, full context kept         |
 | `resume-other-cwd.jsonl`      | same `--session-id`, different cwd → empty new session                                                  |
 | `session-name.jsonl`          | `set_session_name` → `session_info_changed` event, `get_state.sessionName`                             |
+| `model-override-1-set-model.jsonl` / `-2-resume-with-model-flag.jsonl` / `-3-resume-without-flag.jsonl` | `set_model faux-2`; a resume with `--model faux/faux-1` that gets a reply; a later resume without `--model` stays on faux-1 |
+| `session-id-too-long.jsonl`   | 300-char session id: `prompt` accepted, reply fails with `ENAMETOOLONG`, no file written                 |
 | `rate-limit.jsonl`            | 429 → three auto-retries (2 s, 4 s, 8 s) → final failure                                                 |
 | `rate-limit-abort.jsonl`      | `abort` during the retry wait                                                                           |
 | `provider-rejected-401.jsonl` | **real** Anthropic call with an invalid key → 401 error message                                         |
@@ -127,7 +132,13 @@ A second `prompt` during a run is rejected: `{"id":"r2","type":"response","comma
 - Success: `{"id":"r2","type":"response","command":"set_model","success":true,"data":{<Model>}}`. No event is emitted. The session file gains a `{"type":"model_change","provider":"faux","modelId":"faux-2"}` entry.
 - Unknown model: `{"id":"r3",…,"success":false,"error":"Model not found: faux/does-not-exist"}`.
 - The next reply came from `faux-2` and saw the earlier turns: `[faux-2] I can see 3 turns: user:"first on faux-1", assistant:"[faux-1] faux reply to: first on faux-1", user:"second on faux-2 [[recall]]"`.
-- **On respawn, `--model` overrides the session's model.** After `set_model faux-2`, respawning without `--model` gave `get_state.model.id = "faux-2"`; respawning with `--model faux/faux-1` gave `"faux-1"`. Passing `--model` on every spawn would silently undo a mid-chat model switch.
+- **On respawn, `--model` overrides the session's model, and the override sticks once a reply is made** (`model-override-*.jsonl`, chat `c-model-2`):
+  1. `set_model faux-2` → `get_state` faux-2. The file has `model_change` entries `[faux-1, faux-2]`.
+  2. Resume with `--model faux/faux-1` and no prompt → `get_state` faux-1. No `model_change` is written. A later resume without `--model` → faux-2 (the override was not saved).
+  3. Resume with `--model faux/faux-1` and a prompt → the reply comes from faux-1. Still no new `model_change` entry (`[faux-1, faux-2]`).
+  4. Resume **without** `--model` after step 3 → `get_state` faux-1, and the next reply also comes from faux-1. The user's `set_model faux-2` is lost for good.
+  - Source (`getSessionContextSettings` in pi's bundle): on resume, the model is whichever comes last on the branch, a `model_change` entry or an assistant message's `provider`/`model`. A reply under `--model` therefore becomes the chat's saved model.
+  - **Requirement for 1A (and its tests): a resumed spawn must never pass `--model`.** Pass it only when the chat has no session file yet. Test: create a chat, `set_model` to B, settle, exit; respawn (fake pi or real faux) and assert the spawn args contain no `--model` and that `get_state` reports B.
 
 ### `get_available_models`
 
@@ -215,7 +226,11 @@ Invalid `ANTHROPIC_API_KEY` (`provider-rejected-401.jsonl`): the prompt is accep
 pi rejects bad ids at startup: the process exits with code 1 before any RPC output, and stderr reads `Error: Session id must be non-empty, contain only alphanumeric characters, '-', '_', and '.', and start and end with an alphanumeric character`.
 - Accepted: `c_01JABCDEF`, `c-01JABCDEF`, `c.01J`, `01JABCDEFGHJKMNPQRSTVWXYZ0`.
 - Rejected: `-lead`, `trail-`, `has space`, `a/b`, `ü-unicode`.
-- The plan's `c_01J…` (underscore + ULID) is therefore valid. Proposed format: `c_` + 26-char Crockford ULID, validated by the helper with `^c_[0-9A-HJKMNP-TV-Z]{26}$`. It sorts by creation time and splits unambiguously out of the file name.
+- **No length limit in pi.** Ids of any length pass the character check, but the session file name `<24-char timestamp>_<id>.jsonl` hits the macOS 255-byte file-name limit:
+  - Ids up to 224 characters worked: the file was written.
+  - At 225 and 300 characters, `get_state` and `prompt` still succeed (`disposition:"started"`). The run then ends with an assistant `message_end` `stopReason:"error"`, `errorMessage: "ENAMETOOLONG: name too long, open '<session-dir>/<timestamp>_<id>.jsonl'"` (empty content, zero usage) → `agent_settled{aborted:false}`. No file is written, so the chat is lost on exit (`session-id-too-long.jsonl`). `[INFERENCE]` The model was not called, given the zero usage.
+  - The helper must cap chatId length itself.
+- The plan's `c_01J…` (underscore + ULID) is therefore valid. Proposed format: `c_` + 26-char Crockford ULID, validated by the helper with `^c_[0-9A-HJKMNP-TV-Z]{26}$` (28 chars, well under 224). It sorts by creation time and splits unambiguously out of the file name.
 
 ## Read-only tools
 
@@ -254,7 +269,7 @@ Proposed changes to `plans/freedia-plan.md` (not applied):
    - `bash`, `abort_bash`, `steer`, `follow_up`, `clear_queue`, `new_session`, `switch_session`, `fork`, `clone`, `get_fork_messages`, `get_entries`, `get_tree`, `export_html`, `compact`, `set_auto_compaction`, `set_auto_retry`, `abort_retry`, `set_steering_mode`, `set_follow_up_mode`, `cycle_model`, `set_thinking_level`, `cycle_thinking_level`, `get_available_thinking_levels`, `get_session_stats`, `get_last_assistant_text`, `get_commands`, `extension_ui_response`.
    - State that S1 observed RPC `bash` executing a shell with `--tools read,grep,find,ls`.
 4. **chatId format:**
-   - Replace "(letters, numbers, `-`; …)" with "`c_` + 26-char ULID (`^c_[0-9A-HJKMNP-TV-Z]{26}$`). pi accepts `[A-Za-z0-9._-]`, starting and ending alphanumeric, and exits with code 1 otherwise. The helper validates before spawning and answers `helper.error` `spawn_failed` for an invalid id."
+   - Replace "(letters, numbers, `-`; …)" with "`c_` + 26-char ULID (`^c_[0-9A-HJKMNP-TV-Z]{26}$`). pi accepts `[A-Za-z0-9._-]`, starting and ending alphanumeric, and exits with code 1 otherwise. pi has no length limit, but ids over 224 characters fail with `ENAMETOOLONG` on the first save and the chat is never written. The helper validates format and length before spawning and answers `helper.error` `spawn_failed` for an invalid id."
 5. **Chats = pi sessions:**
    - Add: "Session file = `~/.freedia/chats/<timestamp>_<chatId>.jsonl` (flat dir, created on the first message, so a chat that never got a message has no file and is not listed). `chat.list` reads each file's header (`id`) and entries:
      - `title` = latest `session_info.name`, else the first user message's question line;
@@ -262,7 +277,7 @@ Proposed changes to `plans/freedia-plan.md` (not applied):
    - `chat.delete` removes the file matching `*_<chatId>.jsonl`. Deleting a chat whose pi process is running: the helper aborts and stops that process first."
    - Add: "pi matches `--session-id` against the session header's `cwd`. A different cwd silently starts an empty chat with the same id, so the fixed `~/.freedia` cwd is load-bearing."
 6. **pi launch:**
-   - Pass `--model <id>` **only when the chat's session file does not exist yet**. On resume, omit it: `--model` overrides the session's last `model_change`, which would undo a mid-chat `set_model`.
+   - Pass `--model <id>` **only when the chat's session file does not exist yet. A resumed spawn must never pass `--model`.** Otherwise `--model` overrides the session's model, and after one reply it replaces the user's `set_model` choice permanently (see the `set_model` section). 1A must test this.
    - Add `--no-mcp` and `--no-themes`.
    - Set `env BUN_BE_BUN=1` (required: without it the compiled helper re-runs itself).
    - Test-only: the helper accepts extra pi args from `FREEDIA_PI_EXTRA_ARGS` (or a test config) so e2e can add `-e <faux-extension.ts> --offline --model faux/faux-1`. Keep it unset in production.

@@ -26,11 +26,16 @@ const piCli =
 	);
 const fauxExtension =
 	process.env.FREEDIA_FAUX_EXT ?? resolve(import.meta.dir, "faux-extension.ts");
-const outDir = process.env.FREEDIA_FIXTURE_DIR ?? resolve(import.meta.dir);
+const args = process.argv.slice(2);
+const outDir =
+	process.env.FREEDIA_FIXTURE_DIR ??
+	(args.includes("--write-fixtures") ? resolve(import.meta.dir) : undefined);
 const cwd = join(home, ".freedia");
 const agentDir =
 	process.env.PI_CODING_AGENT_DIR ?? join(home, ".freedia/pi-agent");
 const sessionDir = mkdtempSync(join(tmpdir(), "freedia-s1-"));
+const tmpRoot = tmpdir().replace(/\/$/, "");
+const fixturesDir = resolve(import.meta.dir);
 const results: Json = {
 	runtime: process.execPath,
 	bun: Bun.version,
@@ -178,10 +183,17 @@ class Pi {
 	}
 
 	save(name: string): void {
-		writeFileSync(
-			join(outDir, `${name}.jsonl`),
-			`${this.lines.map((l) => JSON.stringify(l)).join("\n")}\n`,
+		if (!outDir) return;
+		const scrubbed = this.lines.map((l) =>
+			JSON.stringify(l)
+				.replaceAll(sessionDir, "$TMP/freedia-s1")
+				.replaceAll(`/private${tmpRoot}`, "$TMP")
+				.replaceAll(tmpRoot, "$TMP")
+				.replaceAll(fixturesDir, "$FIXTURES")
+				.replaceAll(home, "$HOME")
+				.replace(/req_[A-Za-z0-9]+/g, "req_PLACEHOLDER"),
 		);
+		writeFileSync(join(outDir, `${name}.jsonl`), `${scrubbed.join("\n")}\n`);
 	}
 }
 
@@ -334,6 +346,137 @@ async function setModelMidSession(): Promise<void> {
 	await pi.request({ id: "r5", type: "get_state" });
 	await pi.close();
 	pi.save("set-model");
+}
+
+async function modelOverrideOnResume(): Promise<void> {
+	const id = "c-model-2";
+	const resumeArgs = [
+		"--session-dir",
+		sessionDir,
+		"--session-id",
+		id,
+		"--no-extensions",
+		"-e",
+		fauxExtension,
+		"--offline",
+		...readOnly,
+	];
+	const sessionFile = () =>
+		join(
+			sessionDir,
+			readdirSync(sessionDir).find((f) => f.endsWith(`_${id}.jsonl`)) ?? "",
+		);
+	const modelChanges = async () =>
+		(await Bun.file(sessionFile()).text())
+			.split("\n")
+			.filter((line) => line.includes('"type":"model_change"'))
+			.map((line) => JSON.parse(line).modelId);
+	const first = new Pi(chat(id));
+	const s1 = first.settled();
+	await first.request({ id: "r1", type: "prompt", message: "first on faux-1" });
+	await s1;
+	await first.request({
+		id: "r2",
+		type: "set_model",
+		provider: "faux",
+		modelId: "faux-2",
+	});
+	const modelOf = (state: PiRecord) =>
+		JSON.stringify(state.data).match(/"model":\{"id":"([^"]+)"/)?.[1];
+	const stateAfterSet = modelOf(
+		await first.request({ id: "r3", type: "get_state" }),
+	);
+	await first.close();
+	first.save("model-override-1-set-model");
+	const afterSet = await modelChanges();
+	const withFlag = new Pi(chat(id));
+	const stateWithFlag = modelOf(
+		await withFlag.request({ id: "r1", type: "get_state" }),
+	);
+	await withFlag.close();
+	const afterFlagNoPrompt = await modelChanges();
+	const probe = new Pi(resumeArgs);
+	const stateNoFlagAfterFlagNoPrompt = modelOf(
+		await probe.request({ id: "r1", type: "get_state" }),
+	);
+	await probe.close();
+	const withFlagPrompt = new Pi(chat(id));
+	await withFlagPrompt.request({ id: "r1", type: "get_state" });
+	const s2 = withFlagPrompt.settled();
+	await withFlagPrompt.request({
+		id: "r2",
+		type: "prompt",
+		message: "resumed with --model [[recall]]",
+	});
+	await s2;
+	await withFlagPrompt.close();
+	withFlagPrompt.save("model-override-2-resume-with-model-flag");
+	const afterFlagPrompt = await modelChanges();
+	const withoutFlag = new Pi(resumeArgs);
+	const stateWithoutFlag = modelOf(
+		await withoutFlag.request({ id: "r1", type: "get_state" }),
+	);
+	const s3 = withoutFlag.settled();
+	await withoutFlag.request({
+		id: "r2",
+		type: "prompt",
+		message: "which model? [[recall]]",
+	});
+	await s3;
+	await withoutFlag.close();
+	withoutFlag.save("model-override-3-resume-without-flag");
+	results.modelOverride = {
+		stateAfterSet,
+		stateNoFlagAfterFlagNoPrompt,
+		afterSet,
+		stateWithFlag,
+		afterFlagNoPrompt,
+		afterFlagPrompt,
+		stateWithoutFlag,
+		afterNoFlag: await modelChanges(),
+	};
+}
+
+async function sessionIdLength(): Promise<void> {
+	const outcome: Json = {};
+	for (const length of [64, 224, 225, 300]) {
+		const id = `c${"a".repeat(length - 1)}`;
+		const pi = new Pi(chat(id));
+		const state = await pi.request({ id: "r1", type: "get_state" });
+		const reply = await Promise.race([
+			pi.request({ id: "r2", type: "prompt", message: "hello" }),
+			pi.exited.then((code) => ({ type: "exit", code })),
+		]);
+		await Promise.race([pi.settled(), pi.exited, Bun.sleep(3000)]);
+		await pi.close().catch(() => undefined);
+		const stderr = pi.lines
+			.filter((l) => l.dir === "stderr")
+			.map((l) => l.record);
+		const errors = pi.lines
+			.filter(
+				(l) =>
+					l.dir === "stdout" &&
+					JSON.stringify(l.record).includes("ENAMETOOLONG"),
+			)
+			.map(
+				(l) =>
+					JSON.stringify(l.record).match(/.{0,120}ENAMETOOLONG.{0,80}/)?.[0],
+			);
+		outcome[length] = {
+			stateOk: state.success,
+			promptOk: "success" in reply ? reply.success : reply,
+			fileWritten: readdirSync(sessionDir).some((f) =>
+				f.endsWith(`_${id}.jsonl`),
+			),
+			stderr: stderr.filter(
+				(s) =>
+					typeof s === "string" && !s.startsWith("Warning: No project session"),
+			),
+			errors,
+		};
+		if (length === 300) pi.save("session-id-too-long");
+	}
+	results.sessionIdLength = outcome;
 }
 
 async function resumeAfterExit(): Promise<void> {
@@ -606,6 +749,8 @@ const scenarios: Record<string, () => Promise<void>> = {
 	bashCommand,
 	abortMidReply,
 	setModelMidSession,
+	modelOverrideOnResume,
+	sessionIdLength,
 	resumeAfterExit,
 	rateLimit,
 	rateLimitAbort,
@@ -617,17 +762,23 @@ const scenarios: Record<string, () => Promise<void>> = {
 	longSessionRespawn,
 };
 
-mkdirSync(outDir, { recursive: true });
-const only = process.argv.slice(2);
-for (const [name, run] of Object.entries(scenarios)) {
-	if (only.length && !only.includes(name)) continue;
-	const started = performance.now();
-	try {
-		await run();
-		results[`${name}Ms`] = Math.round(performance.now() - started);
-	} catch (error) {
-		results[`${name}Error`] = String(error);
+if (outDir) mkdirSync(outDir, { recursive: true });
+const only = args.filter((arg) => !arg.startsWith("--"));
+try {
+	for (const [name, run] of Object.entries(scenarios)) {
+		if (only.length && !only.includes(name)) continue;
+		const started = performance.now();
+		try {
+			await run();
+			results[`${name}Ms`] = Math.round(performance.now() - started);
+		} catch (error) {
+			results[`${name}Error`] = String(error);
+		}
 	}
+	results.sessionFiles = readdirSync(sessionDir, { recursive: true });
+	results.fixturesWritten =
+		outDir ?? "none (pass --write-fixtures or FREEDIA_FIXTURE_DIR)";
+	console.log(JSON.stringify(results, null, 2));
+} finally {
+	rmSync(sessionDir, { recursive: true, force: true });
 }
-results.sessionFiles = readdirSync(sessionDir, { recursive: true });
-console.log(JSON.stringify(results, null, 2));
