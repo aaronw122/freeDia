@@ -1,0 +1,6 @@
+{"t":0,"dir":"stdin","record":{"id":"r1","type":"get_state"}}
+{"t":102,"dir":"stderr","record":"Warning: No project session found with id 'c-cwd-1'; creating a new session with that id."}
+{"t":126,"dir":"stdout","record":{"id":"r1","type":"response","command":"get_state","success":true,"data":{"model":{"id":"faux-1","name":"Faux One","api":"faux","provider":"faux","baseUrl":"http://localhost:0","reasoning":false,"input":["text","image"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":128000,"maxTokens":16384},"thinkingLevel":"off","isStreaming":false,"isCompacting":false,"steeringMode":"one-at-a-time","followUpMode":"one-at-a-time","sessionFile":"/var/folders/70/4hzdqsx504l7ld5927mrwr4r0000gn/T/freedia-s1-x736Fm/2026-10-19T23-05-15-819Z_c-cwd-1.jsonl","sessionId":"c-cwd-1","autoCompactionEnabled":true,"messageCount":0,"pendingMessageCount":0}}}
+{"t":126,"dir":"stdin","record":{"id":"r2","type":"get_messages"}}
+{"t":126,"dir":"stdout","record":{"id":"r2","type":"response","command":"get_messages","success":true,"data":{"messages":[]}}}
+{"t":129,"dir":"exit","record":{"code":0}}
