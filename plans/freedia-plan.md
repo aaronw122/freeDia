@@ -113,8 +113,8 @@ Page text is capped at **8,000 characters** (~2k tokens) by default, taken from 
 
 ### Bucket 0 — scaffold first, then both spikes in parallel (gate for everything else)
 
-- [ ] **0.1 Scaffold** monorepo: bun workspaces, TS strict, Biome, `bun test`, WXT app skeleton, helper skeleton, shared envelope + helper-command types in `packages/helper/src/protocol.ts` (imported by the extension). `bun test` green.
-- [ ] **0.2 Spike S1 — pi RPC under Bun** (helper side), recorded in `notes/spike-pi-rpc.md`:
+- [x] **0.1 Scaffold** monorepo: bun workspaces, TS strict, Biome, `bun test`, WXT app skeleton, helper skeleton, shared envelope + helper-command types in `packages/helper/src/protocol.ts` (imported by the extension). `bun test` green.
+- [x] **0.2 Spike S1 — pi RPC under Bun** (helper side), recorded in `notes/spike-pi-rpc.md`:
   - Run pi under Bun ≥ 1.4, and from inside a `bun build --compile` binary with `BUN_BE_BUN=1`.
   - Event shapes for `prompt` streaming, tool events, `abort`, `set_model` mid-session, `get_available_models`, `get_messages`; error shapes for not-signed-in and rate limits.
   - `--session-dir` + `--session-id`: create, resume after process exit with full context, session file naming (needed for `chat.list`/`chat.delete`), title source.
@@ -123,7 +123,7 @@ Page text is capped at **8,000 characters** (~2k tokens) by default, taken from 
   - Read-only: `--tools read,grep,find,ls --no-extensions` blocks bash/edit/write and MCP tools via the model (ask it to write a file; must fail). Confirm the RPC `bash` command exists and must be blocked by the helper.
   - pi-ai faux provider usable from pi for e2e.
   - Any Bun incompatibility → fall back to Node ≥ 22.19 for pi only.
-- [ ] **0.3 Spike S2 — browser** (Playwright Chromium + manual Dia), recorded in `notes/spike-browser.md`: (a) `chrome.commands` `Command+Shift+E` fires; (b) content-script keydown Cmd+E in Dia reaches the page before Dia's chat; (c) Dia detection via `navigator.userAgentData.brands`/UA; (d) Document Picture-in-Picture opened from a content-script click/keydown on an https page, and whether it survives tab switches. Sets PiP go/no-go.
+- [ ] **0.3 Spike S2 — browser** (Playwright Chromium + manual Dia), recorded in `notes/spike-browser.md`: (a) `chrome.commands` `Command+Shift+E` fires; (b) content-script keydown Cmd+E in Dia reaches the page before Dia's chat; (c) Dia detection via `navigator.userAgentData.brands`/UA; (d) Document Picture-in-Picture opened from a content-script click/keydown on an https page, and whether it survives tab switches. Sets PiP go/no-go. Chromium side done; Dia manual checks B–D in `notes/spike-browser.md` still open.
 
 Spike outcomes may amend the contract before Bucket 1 starts.
 
