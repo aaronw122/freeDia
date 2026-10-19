@@ -115,7 +115,7 @@ If manual check D fails in Dia, PiP should be Chrome-only rather than dropped.
 
 Prep (once):
 
-1. In a terminal: `cd /Users/aaron/code/personal/Projects/freeDia/.claude/worktrees/spike-s2 && e2e/spike/build.sh`. The unpacked extension is at `/Users/aaron/code/personal/Projects/freeDia/.claude/worktrees/spike-s2/e2e/spike/extension/.output/chrome-mv3`.
+1. In a terminal, from the repo root on this branch, run `e2e/spike/build.sh`. The unpacked extension is at `e2e/spike/extension/.output/chrome-mv3` (repo-relative).
 2. In Dia, open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and choose the folder above. Confirm "freeDia spike S2" appears enabled.
 3. Open `chrome://extensions/shortcuts` in Dia. **Observe and record:** does "freeDia spike S2 → Open freeDia chat" show **⇧⌘E** or is it blank (blank means Chromium dropped it because of a conflict)?
 4. Open `https://example.com` in a normal Dia tab. Open DevTools (⌥⌘I) → Console. Read state with `JSON.parse(document.documentElement.dataset.spikeCs)`. `world` should be `"isolated"` and `hasPipApi` should be `true`. Two small buttons, "content-script: open PiP" and "count", appear at the bottom of the page.
@@ -149,14 +149,14 @@ C. Cmd+Shift+E (extension command) in Dia:
 
 D. PiP lifetime in Dia:
 
-1. Open the PiP with the page button (A1). Click **count** inside the PiP window twice. Back on the page, run the console state command: `clicks` should be `2`.
+1. Open the PiP with the **content-script: open PiP** button (as in A1). Click **count** inside the PiP window twice. Back on the page, run the console state command: `clicks` should be `2`.
 2. Press Cmd+T, open `https://example.org`, and stay there 5 seconds. Then switch back with Ctrl+Tab. **Observe:** the PiP window stays open the whole time.
 3. Switch to another Dia window or space and back. **Observe:** PiP still open.
 4. Open the PiP again from a **second** example.com tab. **Observe:** the first tab's PiP closes and the second's opens. This is Chromium's one-PiP-at-a-time behavior.
-5. In the opener tab, click the "More information…" link (full navigation). **Observe:** PiP closes.
+5. In the opener tab, navigate away (type `https://example.org` in the address bar and press Enter, or run `location.href = "https://example.org"` in the console). **Observe:** PiP closes.
 6. Report any deviation from Chromium: PiP not opening, closing on tab switch, or opening in a Dia-styled panel instead of a floating window.
 
-E. Cleanup: on `chrome://extensions`, remove "freeDia spike S2".
+E. Cleanup, right after the checks: on `chrome://extensions` in Dia, click **Remove** on "freeDia spike S2" so the spike extension (content script on all pages, `tabs` permission) does not stay in your Dia profile. Optionally turn Developer mode back off.
 
 ## Contract/plan amendments (proposed; plan not edited)
 
