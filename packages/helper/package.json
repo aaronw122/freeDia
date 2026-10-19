@@ -1,0 +1,12 @@
+{
+	"name": "freedia",
+	"version": "0.0.0",
+	"type": "module",
+	"exports": {
+		"./protocol": "./src/protocol.ts"
+	},
+	"scripts": {
+		"build": "bun build --compile src/main.ts --outfile dist/freedia-helper",
+		"typecheck": "tsc --noEmit"
+	}
+}
