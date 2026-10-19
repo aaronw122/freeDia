@@ -79,6 +79,7 @@ export interface ChatStatus {
 export type HelperErrorCode = "pi_missing" | "not_signed_in" | "spawn_failed";
 
 export interface HelperError {
+	id?: string;
 	type: "helper.error";
 	chatId?: string;
 	code: HelperErrorCode;
@@ -102,6 +103,8 @@ export type ExtensionToHelper = Envelope<ForwardedRpc> | HelperCommand;
 
 export type HelperToExtension = Envelope | HelperReply | HelperPush;
 
+export const CHAT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/;
+
 const forwardedRpcTypes: ReadonlySet<string> = new Set(FORWARDED_RPC_TYPES);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -116,12 +119,44 @@ export function isForwardedRpc(value: unknown): value is ForwardedRpc {
 	return isRecord(value) && isForwardedRpcType(value.type);
 }
 
+export function isChatId(value: unknown): value is string {
+	return typeof value === "string" && CHAT_ID_PATTERN.test(value);
+}
+
 export function isEnvelope(value: unknown): value is Envelope {
 	return (
 		isRecord(value) &&
-		typeof value.chatId === "string" &&
-		value.chatId.length > 0 &&
+		isChatId(value.chatId) &&
 		isRecord(value.rpc) &&
 		typeof value.rpc.type === "string"
+	);
+}
+
+export function isHelperCommand(value: unknown): value is HelperCommand {
+	if (!isRecord(value) || typeof value.id !== "string") {
+		return false;
+	}
+	switch (value.type) {
+		case "helper.hello":
+			return (
+				typeof value.maxConcurrent === "number" &&
+				Number.isInteger(value.maxConcurrent) &&
+				value.maxConcurrent > 0
+			);
+		case "chat.list":
+			return true;
+		case "chat.delete":
+			return isChatId(value.chatId);
+		default:
+			return false;
+	}
+}
+
+export function isChatStatus(value: unknown): value is ChatStatus {
+	return (
+		isRecord(value) &&
+		value.type === "chat.status" &&
+		isChatId(value.chatId) &&
+		(value.state === "starting" || value.state === "queued")
 	);
 }
