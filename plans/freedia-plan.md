@@ -143,6 +143,7 @@ Modelled on Dia (`notes/research-page-text-cap.md`, `~/code/personal/Projects/no
 6. **Cleanup:** helper deletes the file after **60 min** unused (longer than the extension's 30, so the extension never assumes a deleted file), on `page.clear` / `chat.delete`, and clears `~/.freedia/pages` on startup.
 7. **Reopened chats:** earlier excerpts stay in the history. The next message compares the current page with the chat's stored fingerprint and follows step 5: same page → file only; different page → full excerpt and file.
 8. **Pages freeDia can't read (v1):** PDFs (Chrome's PDF viewer runs no content scripts), YouTube (Readability finds nothing; the transcript needs its own fetch), canvas-rendered pages such as Google Docs, and non-web pages (`chrome://`, new tab). The chat still works: no excerpt or file is sent, the UI shows "freeDia can't read this page yet", and the prompt tells pi no page text is available. Highlights still work where the page allows selection. PDF and YouTube support are follow-ups (see Out of scope).
+9. **Always sent; no opt-out.** Opening the chat on a page is the user asking about that page, so the page is always included per step 5. There is no per-message "leave the page out" control and no site blocklist.
 
 ## Phases
 
