@@ -4,18 +4,25 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import pkg from "../package.json";
-import { encodeJson, encodeMessage, FrameDecoder } from "./framing";
+import {
+	encodeJson,
+	encodeMessage,
+	FrameDecoder,
+	isOversizedFrame,
+} from "./framing";
 import { Helper, type Output } from "./helper";
 import {
 	bunAddPi,
 	doctor,
 	extensionIdsFrom,
 	install,
+	PI_VERSION,
 	piSignIn,
 	uninstall,
 } from "./install";
 import { freediaPaths } from "./paths";
-import { piConfigFromEnv } from "./pi";
+import { piConfigFromEnv, piVersion } from "./pi";
+import { MAX_EXTENSION_MESSAGE_BYTES } from "./protocol";
 import { SelfUpdater } from "./update";
 
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
@@ -56,14 +63,41 @@ async function runHost(home: string): Promise<void> {
 		pi,
 		output,
 		helperVersion: pkg.version,
+		pinnedPiVersion: PI_VERSION,
+		installPi: (version) => bunAddPi(paths, version, process.execPath, log),
 		log,
-		...(updater === undefined ? {} : { updater }),
+		...(updater === undefined
+			? {}
+			: {
+					updater,
+					afterUpdate: async () => {
+						const proc = Bun.spawn([process.execPath, "sync-pi"], {
+							env: { ...process.env, FREEDIA_HOME: home },
+							stdin: "ignore",
+							stdout: "pipe",
+							stderr: "pipe",
+						});
+						const [out, err, code] = await Promise.all([
+							new Response(proc.stdout).text(),
+							new Response(proc.stderr).text(),
+							proc.exited,
+						]);
+						log(`${out}${err}`.trim());
+						if (code !== 0) {
+							throw new Error(`sync-pi exited with code ${code}`);
+						}
+					},
+				}),
 	});
 	const sweep = setInterval(() => helper.sweepPages(), SWEEP_INTERVAL_MS);
-	const decoder = new FrameDecoder();
+	const decoder = new FrameDecoder(MAX_EXTENSION_MESSAGE_BYTES);
 	for await (const chunk of process.stdin) {
 		for (const message of decoder.push(chunk)) {
-			helper.handle(message);
+			if (isOversizedFrame(message)) {
+				helper.rejectOversized(message.oversized);
+			} else {
+				helper.handle(message);
+			}
 		}
 	}
 	clearInterval(sweep);
@@ -126,7 +160,7 @@ async function runCli(argv: string[]): Promise<number> {
 				sourceBinary: sourceBinary(values.binary),
 				print,
 				installPi: (target, version) =>
-					bunAddPi(target, version, process.execPath),
+					bunAddPi(target, version, process.execPath, print),
 				signIn:
 					values["no-login"] || !process.stdin.isTTY ? undefined : piSignIn,
 				openUrl: values["no-open"]
@@ -149,6 +183,16 @@ async function runCli(argv: string[]): Promise<number> {
 				print(`${check.ok ? "ok  " : "FAIL"} ${check.name}: ${check.detail}`);
 			}
 			return checks.every((check) => check.ok) ? 0 : 1;
+		}
+		case "sync-pi": {
+			const installed = piVersion(paths);
+			if (installed === PI_VERSION) {
+				print(`pi ${installed} matches the helper`);
+				return 0;
+			}
+			print(`Installing pi ${PI_VERSION} (was ${installed || "missing"})…`);
+			await bunAddPi(paths, PI_VERSION, process.execPath, print);
+			return 0;
 		}
 		case "version":
 			print(pkg.version);

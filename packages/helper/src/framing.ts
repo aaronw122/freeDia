@@ -48,14 +48,30 @@ export function encodeJson(json: string, chatId?: string): Uint8Array[] {
 	return frames;
 }
 
+export interface OversizedFrame {
+	oversized: number;
+}
+
 export class FrameDecoder {
 	private buffer = new Uint8Array(0);
+	private skipping = 0;
+	private readonly maxBytes: number;
 
-	push(bytes: Uint8Array): unknown[] {
-		const merged = new Uint8Array(this.buffer.byteLength + bytes.byteLength);
+	constructor(maxBytes = Number.POSITIVE_INFINITY) {
+		this.maxBytes = maxBytes;
+	}
+
+	push(bytes: Uint8Array): Array<unknown | OversizedFrame> {
+		let input = bytes;
+		if (this.skipping > 0) {
+			const skipped = Math.min(this.skipping, input.byteLength);
+			this.skipping -= skipped;
+			input = input.subarray(skipped);
+		}
+		const merged = new Uint8Array(this.buffer.byteLength + input.byteLength);
 		merged.set(this.buffer, 0);
-		merged.set(bytes, this.buffer.byteLength);
-		const messages: unknown[] = [];
+		merged.set(input, this.buffer.byteLength);
+		const messages: Array<unknown | OversizedFrame> = [];
 		let offset = 0;
 		while (merged.byteLength - offset >= 4) {
 			const length = new DataView(
@@ -63,6 +79,14 @@ export class FrameDecoder {
 				merged.byteOffset + offset,
 				4,
 			).getUint32(0, true);
+			if (length > this.maxBytes) {
+				messages.push({ oversized: length });
+				const available = merged.byteLength - offset - 4;
+				const skipped = Math.min(length, available);
+				offset += 4 + skipped;
+				this.skipping = length - skipped;
+				continue;
+			}
 			if (merged.byteLength - offset - 4 < length) {
 				break;
 			}
@@ -75,8 +99,17 @@ export class FrameDecoder {
 	}
 
 	get pending(): number {
-		return this.buffer.byteLength;
+		return this.buffer.byteLength + this.skipping;
 	}
+}
+
+export function isOversizedFrame(value: unknown): value is OversizedFrame {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"oversized" in value &&
+		typeof value.oversized === "number"
+	);
 }
 
 function parseJson(text: string): unknown {

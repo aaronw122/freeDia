@@ -6,6 +6,7 @@ import {
 	encodeMessage,
 	FrameDecoder,
 	frame,
+	isOversizedFrame,
 	splitLines,
 } from "./framing";
 import {
@@ -87,6 +88,27 @@ describe("native messaging framing", () => {
 		splitter.push(new TextEncoder().encode(":2}\n"));
 		splitter.end();
 		expect(lines).toEqual(['{"a":"x y"}', '{"b":1}', '{"c":2}']);
+	});
+});
+
+describe("extension → host size limit", () => {
+	test("an oversized frame is reported and skipped without buffering; later frames still decode", () => {
+		const decoder = new FrameDecoder(64);
+		const big = frame(new TextEncoder().encode(`"${"x".repeat(98)}"`));
+		const small = encodeMessage({
+			type: "chat.list",
+			id: "h1",
+		} as never)[0] as Uint8Array;
+		const out = [
+			...decoder.push(big.subarray(0, 10)),
+			...decoder.push(big.subarray(10, 60)),
+		];
+		expect(out).toEqual([{ oversized: 100 }]);
+		expect(out.every((item) => isOversizedFrame(item))).toBe(true);
+		expect(decoder.pending).toBe(44);
+		const tail = concat([big.subarray(60), small]);
+		expect(decoder.push(tail)).toEqual([{ type: "chat.list", id: "h1" }]);
+		expect(decoder.pending).toBe(0);
 	});
 });
 

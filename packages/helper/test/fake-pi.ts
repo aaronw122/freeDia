@@ -19,6 +19,7 @@ export interface FakePiConfig {
 	auth?: Record<string, string>;
 	realTiming?: boolean;
 	title?: string | null;
+	exitAfterStdout?: number;
 }
 
 const home = process.env.HOME as string;
@@ -41,9 +42,20 @@ function flag(name: string): string | undefined {
 	return index >= 0 ? argv[index + 1] : undefined;
 }
 
+let stdoutCount = 0;
+
 function out(record: Record<string, unknown>): void {
 	log({ event: "stdout", record });
 	process.stdout.write(`${JSON.stringify(record)}\n`);
+	stdoutCount++;
+	if (
+		config.exitAfterStdout !== undefined &&
+		argv.includes("--session-id") &&
+		stdoutCount >= config.exitAfterStdout
+	) {
+		log({ event: "eof" });
+		process.exit(0);
+	}
 }
 
 if (argv[0] === "--version") {
@@ -53,6 +65,7 @@ if (argv[0] === "--version") {
 
 if (argv[0] === "auth") {
 	const provider = flag("--provider") ?? "";
+	log({ event: "auth", argv });
 	const status = config.auth?.[provider];
 	console.log(
 		JSON.stringify(

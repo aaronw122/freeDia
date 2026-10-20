@@ -125,6 +125,10 @@ export const MAX_HOST_MESSAGE_BYTES = 1024 * 1024;
 
 export const CHUNK_SLICE_BYTES = 700_000;
 
+export const MAX_EXTENSION_MESSAGE_BYTES = 8 * 1024 * 1024;
+
+export const MAX_PAGE_BYTES = 5 * 1024 * 1024;
+
 export type HelperCommand =
 	| HelperHelloRequest
 	| ChatListRequest

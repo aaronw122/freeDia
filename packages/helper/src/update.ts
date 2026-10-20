@@ -12,6 +12,7 @@ import type { Updater } from "./helper";
 
 export const REGISTRY_URL = "https://registry.npmjs.org";
 export const PACKAGE_NAME = "freedia";
+export const TARBALL_PREFIX = `${REGISTRY_URL}/${PACKAGE_NAME}/-/`;
 export const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export type Fetch = (url: string) => Promise<Response>;
@@ -21,7 +22,6 @@ export interface UpdaterOptions {
 	binaryPath: string;
 	statePath: string;
 	fetch?: Fetch;
-	registry?: string;
 	platform?: string;
 	arch?: string;
 	now?: () => number;
@@ -45,11 +45,46 @@ export function compareVersions(a: string, b: string): number {
 	return 0;
 }
 
-export function binaryNames(platform: string, arch: string): string[] {
-	return [
-		`package/dist/freedia-helper-${platform}-${arch}`,
-		"package/dist/freedia-helper",
-	];
+export function binaryEntry(platform: string, arch: string): string {
+	return `package/dist/freedia-helper-${platform}-${arch}`;
+}
+
+export function isRegistryTarball(url: string): boolean {
+	try {
+		const parsed = new URL(url);
+		return (
+			parsed.protocol === "https:" &&
+			parsed.host === "registry.npmjs.org" &&
+			parsed.username === "" &&
+			parsed.password === "" &&
+			url.startsWith(TARBALL_PREFIX) &&
+			!parsed.pathname.split("/").includes("..")
+		);
+	} catch {
+		return false;
+	}
+}
+
+export function matchesIntegrity(
+	bytes: Uint8Array,
+	integrity: string,
+): boolean {
+	const match = /^sha512-([A-Za-z0-9+/]+={0,2})$/.exec(integrity.trim());
+	if (match === null) {
+		return false;
+	}
+	const digest = new Bun.CryptoHasher("sha512").update(bytes).digest("base64");
+	return digest === match[1];
+}
+
+export function isSafeEntry(name: string): boolean {
+	return (
+		name !== "" &&
+		!name.startsWith("/") &&
+		!name.startsWith("\\") &&
+		!/^[A-Za-z]:/.test(name) &&
+		!name.split(/[/\\]/).includes("..")
+	);
 }
 
 export class SelfUpdater implements Updater {
@@ -85,13 +120,14 @@ export class SelfUpdater implements Updater {
 		return this.checking;
 	}
 
-	applyIfReady(): void {
+	applyIfReady(): boolean {
 		if (this.staged === undefined || !existsSync(this.nextPath)) {
-			return;
+			return false;
 		}
 		renameSync(this.nextPath, this.options.binaryPath);
 		this.log(`updated helper to ${this.staged}`);
 		this.staged = undefined;
+		return true;
 	}
 
 	private lastCheck(): number {
@@ -113,23 +149,30 @@ export class SelfUpdater implements Updater {
 		}
 		mkdirSync(dirname(this.options.statePath), { recursive: true });
 		writeFileSync(this.options.statePath, JSON.stringify({ lastCheck: now }));
-		const registry = this.options.registry ?? REGISTRY_URL;
-		const latest = await this.fetch(`${registry}/${PACKAGE_NAME}/latest`);
+		const latest = await this.fetch(`${REGISTRY_URL}/${PACKAGE_NAME}/latest`);
 		if (!latest.ok) {
 			this.log(`update check: registry answered ${latest.status}`);
 			return;
 		}
 		const manifest = (await latest.json()) as {
 			version?: unknown;
-			dist?: { tarball?: unknown };
+			dist?: { tarball?: unknown; integrity?: unknown };
 		};
-		const version = manifest.version;
+		const { version } = manifest;
 		const tarball = manifest.dist?.tarball;
+		const integrity = manifest.dist?.integrity;
 		if (
 			typeof version !== "string" ||
-			typeof tarball !== "string" ||
 			compareVersions(version, this.options.currentVersion) <= 0
 		) {
+			return;
+		}
+		if (typeof tarball !== "string" || !isRegistryTarball(tarball)) {
+			this.log(`update ${version}: rejected tarball URL ${String(tarball)}`);
+			return;
+		}
+		if (typeof integrity !== "string") {
+			this.log(`update ${version}: no integrity in the registry manifest`);
 			return;
 		}
 		const download = await this.fetch(tarball);
@@ -137,20 +180,33 @@ export class SelfUpdater implements Updater {
 			this.log(`update download: ${download.status}`);
 			return;
 		}
-		const files = await new Bun.Archive(await download.bytes()).files();
-		const binary = binaryNames(
-			this.options.platform ?? process.platform,
-			this.options.arch ?? process.arch,
-		)
-			.map((name) => files.get(name))
-			.find((file) => file !== undefined);
-		if (binary === undefined) {
+		const bytes = await download.bytes();
+		if (!matchesIntegrity(bytes, integrity)) {
+			this.log(`update ${version}: tarball failed the integrity check`);
+			return;
+		}
+		const entries = await new Bun.Archive(bytes).files();
+		const unsafe = [...entries.keys()].find((name) => !isSafeEntry(name));
+		if (unsafe !== undefined) {
+			this.log(`update ${version}: rejected archive entry ${unsafe}`);
+			return;
+		}
+		const binary = entries.get(
+			binaryEntry(
+				this.options.platform ?? process.platform,
+				this.options.arch ?? process.arch,
+			),
+		);
+		if (binary === undefined || binary.size === 0) {
 			this.log(`update ${version}: no binary for this platform`);
 			return;
 		}
+		const staging = `${this.nextPath}.partial`;
+		rmSync(staging, { force: true });
 		rmSync(this.nextPath, { force: true });
-		writeFileSync(this.nextPath, await binary.bytes());
-		chmodSync(this.nextPath, 0o755);
+		writeFileSync(staging, await binary.bytes(), { mode: 0o600 });
+		chmodSync(staging, 0o755);
+		renameSync(staging, this.nextPath);
 		this.staged = version;
 		this.log(`staged helper ${version}`);
 	}
