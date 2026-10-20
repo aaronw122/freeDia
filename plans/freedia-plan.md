@@ -114,7 +114,7 @@ Memory: ~91 MB per pi process, only while a chat is generating, so at most 3 × 
 
 ## Page text
 
-Modelled on Dia (`notes/research-page-text-cap.md`, `~/code/personal/Projects/notes/dia-decompile-analysis.md` §3): page as markdown, a bounded excerpt in the message, the full page readable on demand. freeDia differs in one place: Dia cuts prefix + suffix and sends the highlight separately; freeDia also centers the excerpt on the highlight, so the model sees the text around it.
+Modelled on Dia (`notes/research-page-text-cap.md`, `~/code/personal/Projects/notes/dia-decompile-analysis.md` §3): page as markdown, a bounded excerpt in the message, the full page readable on demand. Dia's binary shows a per-tab character budget (`truncatingTextContent(totalCharacterBudget:)`, `TabDataTruncation`) but not which part of the page it keeps; the analysis note's "prefix/suffix" reading isn't backed by any string. freeDia's split (start-heavy, centered on the highlight when there is one) is its own choice, following the head-first truncation in Brave Leo, Firefox and Chrome.
 
 1. **Extraction (extension, current tab):** Readability → markdown (Turndown). Fall back to visible `innerText` when Readability returns null or keeps < ~20% of it. Compute a fingerprint (hash) of the markdown.
 2. **Excerpt (in the message, saved in the chat):** budget = **10% of the selected model's `contextWindow`** (from `get_available_models`), with a floor and ceiling, converted at ~4 chars/token.
