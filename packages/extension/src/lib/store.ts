@@ -123,7 +123,11 @@ export async function removePageRecord(
 	await store.remove(PAGE_KEY_PREFIX + chatId);
 }
 
-export function memoryStore(): KeyValueStore & { data: Map<string, unknown> } {
+export interface MemoryStore extends KeyValueStore {
+	data: Map<string, unknown>;
+}
+
+export function memoryStore(): MemoryStore {
 	const data = new Map<string, unknown>();
 	return {
 		data,

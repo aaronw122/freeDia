@@ -233,6 +233,7 @@ export class RealChatClient implements ChatClient {
 
 	private open(): WorkerPort {
 		const port = this.deps.connect();
+		this.port = port;
 		port.onMessage((message) => {
 			if (this.port === port) {
 				this.fromWorker(message);

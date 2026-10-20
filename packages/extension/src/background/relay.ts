@@ -156,9 +156,7 @@ export class Relay {
 			return;
 		}
 		this.abortIfRunning(chatId);
-		if (this.state === "connected") {
-			this.send({ type: "page.clear", id: this.deps.randomUUID(), chatId });
-		}
+		this.send({ type: "page.clear", id: this.deps.randomUUID(), chatId });
 		await removePageRecord(this.deps.store, chatId);
 		this.closeIfIdle();
 	}
@@ -215,6 +213,9 @@ export class Relay {
 			return;
 		}
 		this.outbox.push(message);
+		if (this.native === null && !this.retryPending) {
+			this.connect();
+		}
 	}
 
 	private connect(): void {
@@ -237,8 +238,14 @@ export class Relay {
 				return;
 			}
 			if (!ready) {
-				const hello = message as { type?: unknown; id?: unknown };
-				if (hello.type !== "helper.hello" || hello.id !== this.helloId) {
+				const isHello =
+					typeof message === "object" &&
+					message !== null &&
+					"type" in message &&
+					message.type === "helper.hello" &&
+					"id" in message &&
+					message.id === this.helloId;
+				if (!isHello) {
 					return;
 				}
 				ready = true;
@@ -247,6 +254,7 @@ export class Relay {
 				for (const queued of this.outbox.splice(0)) {
 					port.postMessage(queued);
 				}
+				this.closeIfIdle();
 				return;
 			}
 			this.fromHelper(message);
@@ -304,14 +312,18 @@ export class Relay {
 	}
 
 	private closeIfIdle(): void {
-		if (this.tabs.size > 0 || this.running.size > 0 || this.native === null) {
+		if (
+			this.tabs.size > 0 ||
+			this.running.size > 0 ||
+			this.outbox.length > 0 ||
+			this.native === null
+		) {
 			return;
 		}
 		const port = this.native;
 		this.native = null;
 		this.chunks.clear();
 		this.requests.clear();
-		this.outbox.length = 0;
 		this.state = "connecting";
 		port.disconnect();
 	}
