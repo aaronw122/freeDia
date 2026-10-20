@@ -486,6 +486,17 @@ export class Helper {
 			this.reply(chatId, this.response(rpc, "abort"));
 			return;
 		}
+		if (
+			rpc.type === "get_messages" &&
+			live === undefined &&
+			sessionFiles(this.paths, chatId).length === 0
+		) {
+			this.reply(chatId, {
+				...this.response(rpc, "get_messages"),
+				data: { messages: [] },
+			});
+			return;
+		}
 		if (rpc.type === "get_available_models" && live === undefined) {
 			await this.answerModels(chatId, rpc);
 			return;
@@ -642,11 +653,8 @@ export class Helper {
 		if (hadSession) {
 			this.pendingModels.delete(chatId);
 		}
-		const model = this.launchModel(chatId);
-		const proc = spawnPi(
-			this.pi,
-			chatLaunchArgs(this.pi, chatId, hadSession ? undefined : model),
-		);
+		const model = await this.usableModel(this.launchModel(chatId));
+		const proc = spawnPi(this.pi, chatLaunchArgs(this.pi, chatId, model));
 		const chat: ChatProcess = {
 			chatId,
 			proc,
@@ -880,6 +888,32 @@ export class Helper {
 			...rest,
 			type: "response",
 		});
+	}
+
+	private async usableModel(
+		model: string | undefined,
+	): Promise<string | undefined> {
+		if (model === undefined || this.models === undefined) {
+			return model;
+		}
+		const data = (await this.models)?.data;
+		if (
+			typeof data !== "object" ||
+			data === null ||
+			!("models" in data) ||
+			!Array.isArray(data.models)
+		) {
+			return model;
+		}
+		const known = data.models.some(
+			(entry: unknown) =>
+				typeof entry === "object" &&
+				entry !== null &&
+				"provider" in entry &&
+				"id" in entry &&
+				`${entry.provider}/${entry.id}` === model,
+		);
+		return known ? model : undefined;
 	}
 
 	private maybeTitle(chatId: string): void {

@@ -12,6 +12,7 @@ import {
 import { mountChatWithStore } from "./mount";
 import { asRecord } from "./records";
 import { cleanupChats, type Harness, renderChat } from "./test-utils";
+import { initialTranscript, transcriptReducer } from "./transcript";
 
 afterEach(cleanupChats);
 
@@ -37,7 +38,50 @@ async function ask(h: Harness, text: string) {
 
 const streamRun = promptRun("stream");
 
+describe("restore", () => {
+	test("opening the chat on a tab that already has one shows its messages", async () => {
+		const chatId = crypto.randomUUID();
+		const h = await renderChat({
+			chatId,
+			messages: { [chatId]: fixtureMessages() },
+		});
+		await waitFor(() =>
+			expect(h.ui.getByText("hello from freeDia")).toBeTruthy(),
+		);
+		expect(h.client.callsTo("openChat")).toEqual([[chatId]]);
+		expect(
+			h.ui
+				.getByRole("textbox", { name: "Message" })
+				.getAttribute("placeholder"),
+		).toBe("Ask another question");
+	});
+
+	test("a restore that lands after the user already sent a message is ignored", () => {
+		const chatId = crypto.randomUUID();
+		const sent = transcriptReducer(initialTranscript(chatId), {
+			type: "send",
+			text: "first question",
+		});
+		expect(
+			transcriptReducer(sent, {
+				type: "restored",
+				chatId,
+				messages: fixtureMessages(),
+			}),
+		).toBe(sent);
+	});
+});
+
 describe("composer", () => {
+	test("the message box gets focus once the helper connects", async () => {
+		const h = await renderChat({ connection: "connecting" });
+		const input = h.ui.getByRole("textbox", { name: "Message" });
+		expect(h.root.activeElement).not.toBe(input);
+
+		await h.act(() => h.client.setConnection("connected"));
+		expect(h.root.activeElement).toBe(input);
+	});
+
 	test("highlights show as removable Selected Text chips and re-highlighting adds another", async () => {
 		const h = await renderChat();
 		expect(h.ui.queryByText("Selected Text")).toBeNull();
@@ -366,7 +410,10 @@ describe("chats", () => {
 		expect(list.textContent).toContain("Pricing table question");
 
 		await h.act(() => fireEvent.click(h.ui.getByText("Faux reply page")));
-		expect(h.client.callsTo("openChat")).toEqual([[newer]]);
+		expect(h.client.callsTo("openChat").at(-1)).toEqual([newer]);
+		expect(
+			h.client.callsTo("openChat").filter(([id]) => id === newer),
+		).toHaveLength(1);
 		await waitFor(() =>
 			expect(h.ui.getByText("hello from freeDia")).toBeTruthy(),
 		);

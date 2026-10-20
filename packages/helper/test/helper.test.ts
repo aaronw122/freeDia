@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+	appendFileSync,
 	existsSync,
 	mkdirSync,
 	readdirSync,
@@ -157,7 +158,7 @@ describe("pi launch", () => {
 		expect(env.FREEDIA_PI_EXTRA_ARGS).toBeUndefined();
 	});
 
-	test("a resumed spawn never passes --model and keeps the chat's set_model choice", async () => {
+	test("a resumed spawn passes the chat's own latest model and keeps its set_model choice", async () => {
 		const h = helper({
 			fake: {
 				scripts: {
@@ -192,9 +193,13 @@ describe("pi launch", () => {
 		);
 		const spawns = h.chatSpawns(CHAT_A);
 		expect(spawns).toHaveLength(3);
-		expect(spawns[0]?.argv).toContain("--model");
-		expect(spawns[1]?.argv).not.toContain("--model");
-		expect(spawns[2]?.argv).not.toContain("--model");
+		const modelOf = (argv: string[] | undefined) => {
+			const at = argv?.indexOf("--model") ?? -1;
+			return at < 0 ? undefined : argv?.[at + 1];
+		};
+		expect(modelOf(spawns[0]?.argv)).toBe("faux/faux-1");
+		expect(modelOf(spawns[1]?.argv)).toBe("faux/faux-1");
+		expect(modelOf(spawns[2]?.argv)).toBe("faux/faux-2");
 		expect(state).toMatchObject({
 			success: true,
 			data: { model: { provider: "faux", id: "faux-2" } },
@@ -219,6 +224,26 @@ describe("pi launch", () => {
 		);
 		const second = h.chatSpawns(CHAT_A)[1]?.argv ?? [];
 		expect(second[second.indexOf("--model") + 1]).toBe("faux/faux-2");
+	});
+
+	test("a resumed chat whose model pi no longer lists starts without --model", async () => {
+		const h = helper();
+		await h.rpc(CHAT_A, prompt("r1", "hello"));
+		await h.waitForRpc(
+			CHAT_A,
+			(rpc) => rpc.type === "agent_settled",
+			"first reply",
+		);
+		await h.waitIdle();
+		appendFileSync(
+			h.helperSession(CHAT_A),
+			`${JSON.stringify({ type: "model_change", provider: "gone", modelId: "old-1" })}\n`,
+		);
+		await h.rpc(CHAT_B, { id: "m1", type: "get_available_models" });
+		await h.waitForRpc(CHAT_B, (rpc) => rpc.id === "m1", "model list");
+		await h.rpc(CHAT_A, { id: "s1", type: "get_state" });
+		await h.waitForRpc(CHAT_A, (rpc) => rpc.id === "s1", "resumed state");
+		expect(h.chatSpawns(CHAT_A)[1]?.argv).not.toContain("--model");
 	});
 });
 
@@ -364,7 +389,8 @@ describe("routing and pool", () => {
 		);
 		const spawns = h.chatSpawns(CHAT_A);
 		expect(spawns).toHaveLength(2);
-		expect(spawns[1]?.argv).not.toContain("--model");
+		const resumed = spawns[1]?.argv ?? [];
+		expect(resumed[resumed.indexOf("--model") + 1]).toBe("faux/faux-1");
 		const recall = h
 			.rpcs(CHAT_A)
 			.filter((rpc) => rpc.type === "message_end")
@@ -405,6 +431,11 @@ describe("routing and pool", () => {
 
 	test("get_messages on a reopened chat spawns pi and exits after the response", async () => {
 		const h = helper({ fake: { defaultScript: "abort-resume" } });
+		mkdirSync(h.paths.chats, { recursive: true });
+		writeFileSync(
+			join(h.paths.chats, `2026-10-20T00-00-00-000Z_${CHAT_A}.jsonl`),
+			`${JSON.stringify({ type: "session", version: 3, id: CHAT_A })}\n`,
+		);
 		await h.rpc(CHAT_A, { id: "g1", type: "get_messages" });
 		const reply = await h.waitForRpc(
 			CHAT_A,
@@ -414,6 +445,22 @@ describe("routing and pool", () => {
 		expect(reply).toMatchObject({ command: "get_messages", success: true });
 		await h.waitIdle();
 		expect(h.chatSpawns(CHAT_A)).toHaveLength(1);
+	});
+
+	test("get_messages on a chat with no session file answers empty without spawning", async () => {
+		const h = helper();
+		await h.rpc(CHAT_A, { id: "g1", type: "get_messages" });
+		expect(h.rpcs(CHAT_A)).toEqual([
+			{
+				id: "g1",
+				type: "response",
+				command: "get_messages",
+				success: true,
+				data: { messages: [] },
+			},
+		]);
+		await h.waitIdle();
+		expect(h.spawns()).toHaveLength(0);
 	});
 });
 
@@ -612,7 +659,8 @@ describe("chat titles", () => {
 		);
 		expect(String(titlePrompt?.message)).not.toContain("URL:");
 		const namer = h.chatSpawns(CHAT_A)[1];
-		expect(namer?.argv).not.toContain("--model");
+		const namerArgv = namer?.argv ?? [];
+		expect(namerArgv[namerArgv.indexOf("--model") + 1]).toBe("faux/faux-1");
 		const named = h
 			.fakeLog()
 			.filter((entry) => entry.pid === namer?.pid && entry.event === "stdin");

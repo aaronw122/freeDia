@@ -65,6 +65,7 @@ export type TranscriptAction =
 	| { type: "send_failed"; message: string }
 	| { type: "reset"; chatId: string }
 	| { type: "loaded"; chatId: string; messages: PiRpcRecord[] }
+	| { type: "restored"; chatId: string; messages: PiRpcRecord[] }
 	| { type: "failed"; title: string; message: string };
 
 const WAITING_PHASES: ReadonlySet<RunPhase> = new Set([
@@ -554,6 +555,15 @@ export function transcriptReducer(
 				turns: turnsFromMessages(action.messages),
 				seq: state.seq,
 			};
+		case "restored":
+			if (
+				action.chatId !== state.chatId ||
+				state.turns.length > 0 ||
+				state.phase !== "idle"
+			) {
+				return state;
+			}
+			return { ...state, turns: turnsFromMessages(action.messages) };
 		case "failed":
 			return {
 				...state,
