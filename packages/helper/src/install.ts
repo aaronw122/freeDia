@@ -82,6 +82,7 @@ export async function bunAddPi(
 	paths: FreediaPaths,
 	version: string,
 	execPath: string,
+	log: (line: string) => void,
 ): Promise<void> {
 	mkdirSync(paths.piDir, { recursive: true });
 	const manifest = join(paths.piDir, "package.json");
@@ -97,11 +98,20 @@ export async function bunAddPi(
 			cwd: paths.piDir,
 			env: { ...process.env, BUN_BE_BUN: "1" },
 			stdin: "ignore",
-			stdout: "inherit",
-			stderr: "inherit",
+			stdout: "pipe",
+			stderr: "pipe",
 		},
 	);
-	const code = await proc.exited;
+	const [out, err, code] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
+	for (const line of `${out}\n${err}`.split("\n")) {
+		if (line.trim() !== "") {
+			log(line);
+		}
+	}
 	if (code !== 0) {
 		throw new Error(`bun add exited with code ${code}`);
 	}

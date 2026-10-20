@@ -444,7 +444,7 @@ describe("model list", () => {
 
 describe("helper commands", () => {
 	test("helper.hello reports versions and pi_missing when pi is absent", async () => {
-		const h = helper({ installPi: false });
+		const h = helper({ piVersion: false });
 		await h.send({ type: "helper.hello", id: "h1", maxConcurrent: 2 });
 		expect(h.sent).toEqual([
 			{ type: "helper.hello", id: "h1", helperVersion: "9.9.9", piVersion: "" },

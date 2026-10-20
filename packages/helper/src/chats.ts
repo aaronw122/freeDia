@@ -88,13 +88,25 @@ export function firstQuestion(entries: SessionEntry[]): string | undefined {
 	return undefined;
 }
 
-export function readSession(file: string) {
+export interface SessionState {
+	id: unknown;
+	headerTimestamp: string | undefined;
+	name: string | undefined;
+	updatedAt: string | undefined;
+	model: string | undefined;
+	userMessages: number;
+	firstReplyTurn: number | undefined;
+	firstPrompt: string | undefined;
+}
+
+export function readSession(file: string): SessionState {
 	const entries = readEntries(file);
 	const header = entries[0];
 	let name: string | undefined;
 	let updatedAt: string | undefined;
 	let model: string | undefined;
 	let userMessages = 0;
+	let firstReplyTurn: number | undefined;
 	for (const entry of entries) {
 		if (entry.type === "session_info" && typeof entry.name === "string") {
 			name = entry.name;
@@ -114,12 +126,19 @@ export function readSession(file: string) {
 			if (message?.role === "user") {
 				userMessages++;
 			}
-			if (
-				message?.role === "assistant" &&
-				typeof message.provider === "string" &&
-				typeof message.model === "string"
-			) {
-				model = `${message.provider}/${message.model}`;
+			if (message?.role === "assistant") {
+				if (
+					firstReplyTurn === undefined &&
+					messageText(message.content).trim() !== ""
+				) {
+					firstReplyTurn = userMessages;
+				}
+				if (
+					typeof message.provider === "string" &&
+					typeof message.model === "string"
+				) {
+					model = `${message.provider}/${message.model}`;
+				}
 			}
 		}
 	}
@@ -131,11 +150,15 @@ export function readSession(file: string) {
 		updatedAt,
 		model,
 		userMessages,
+		firstReplyTurn,
 		firstPrompt: firstQuestion(entries),
 	};
 }
 
-export function chatSessionState(paths: FreediaPaths, chatId: string) {
+export function chatSessionState(
+	paths: FreediaPaths,
+	chatId: string,
+): SessionState | undefined {
 	const file = sessionFiles(paths, chatId).sort().at(-1);
 	return file === undefined ? undefined : readSession(file);
 }

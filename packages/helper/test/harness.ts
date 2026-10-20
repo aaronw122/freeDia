@@ -20,7 +20,7 @@ export const CHAT_C = "0a1b2c3d-4e5f-4a6b-9c7d-8e9f0a1b2c3d";
 
 export interface FakeLogEntry {
 	pid: number;
-	event: "spawn" | "stdin" | "stdout" | "eof";
+	event: "spawn" | "stdin" | "stdout" | "eof" | "auth";
 	argv?: string[];
 	env?: Record<string, string>;
 	cwd?: string;
@@ -58,13 +58,14 @@ export class TestHelper {
 	readonly pi: PiConfig;
 	readonly sent: Sent[] = [];
 	readonly logs: string[] = [];
+	readonly piInstalls: string[] = [];
 	readonly helper: Helper;
 
 	constructor(
 		options: {
 			fake?: FakePiConfig;
 			env?: Record<string, string>;
-			installPi?: boolean;
+			piVersion?: string | false;
 			helper?: Partial<HelperOptions>;
 			home?: string;
 			onMessage?: (message: Sent, harness: TestHelper) => void;
@@ -72,8 +73,8 @@ export class TestHelper {
 	) {
 		this.home = options.home ?? tempHome();
 		this.paths = freediaPaths(this.home);
-		if (options.installPi !== false) {
-			installFakePi(this.paths);
+		if (options.piVersion !== false) {
+			installFakePi(this.paths, options.piVersion ?? "1.3.0");
 		}
 		writeFileSync(
 			join(this.home, "fake-pi.json"),
@@ -88,6 +89,11 @@ export class TestHelper {
 			paths: this.paths,
 			pi: this.pi,
 			helperVersion: "9.9.9",
+			pinnedPiVersion: "1.3.0",
+			installPi: async (version) => {
+				this.piInstalls.push(version);
+				installFakePi(this.paths, version);
+			},
 			log: (line) => this.logs.push(line),
 			output: {
 				message: (message) => {
