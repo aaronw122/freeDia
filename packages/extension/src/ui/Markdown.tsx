@@ -1,10 +1,10 @@
 import { type ComponentProps, memo, useRef } from "react";
-import ReactMarkdown from "react-markdown";
-import rehypeHighlight from "rehype-highlight";
+import ReactMarkdown, { type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CopyButton } from "./CopyButton";
+import { rehypeLowlight } from "./highlight";
 
-function CodeBlock({ children }: ComponentProps<"pre">) {
+function CodeBlock({ children }: ComponentProps<"pre"> & ExtraProps) {
 	const ref = useRef<HTMLPreElement>(null);
 	return (
 		<div className="group relative overflow-hidden rounded-lg border border-neutral-200 bg-neutral-50">
@@ -21,14 +21,16 @@ function CodeBlock({ children }: ComponentProps<"pre">) {
 	);
 }
 
-function Link(props: ComponentProps<"a">) {
-	return <a {...props} target="_blank" rel="noreferrer noopener" />;
+function Link({ href, title, children }: ComponentProps<"a"> & ExtraProps) {
+	return (
+		<a href={href} title={title} target="_blank" rel="noreferrer noopener">
+			{children}
+		</a>
+	);
 }
 
 const remarkPlugins = [remarkGfm];
-const rehypePlugins = [
-	[rehypeHighlight, { detect: true, ignoreMissing: true }],
-] satisfies ComponentProps<typeof ReactMarkdown>["rehypePlugins"];
+const rehypePlugins = [rehypeLowlight];
 const components = { pre: CodeBlock, a: Link };
 
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
