@@ -486,6 +486,17 @@ export class Helper {
 			this.reply(chatId, this.response(rpc, "abort"));
 			return;
 		}
+		if (
+			rpc.type === "get_messages" &&
+			live === undefined &&
+			sessionFiles(this.paths, chatId).length === 0
+		) {
+			this.reply(chatId, {
+				...this.response(rpc, "get_messages"),
+				data: { messages: [] },
+			});
+			return;
+		}
 		if (rpc.type === "get_available_models" && live === undefined) {
 			await this.answerModels(chatId, rpc);
 			return;

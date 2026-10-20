@@ -405,6 +405,11 @@ describe("routing and pool", () => {
 
 	test("get_messages on a reopened chat spawns pi and exits after the response", async () => {
 		const h = helper({ fake: { defaultScript: "abort-resume" } });
+		mkdirSync(h.paths.chats, { recursive: true });
+		writeFileSync(
+			join(h.paths.chats, `2026-10-20T00-00-00-000Z_${CHAT_A}.jsonl`),
+			`${JSON.stringify({ type: "session", version: 3, id: CHAT_A })}\n`,
+		);
 		await h.rpc(CHAT_A, { id: "g1", type: "get_messages" });
 		const reply = await h.waitForRpc(
 			CHAT_A,
@@ -414,6 +419,22 @@ describe("routing and pool", () => {
 		expect(reply).toMatchObject({ command: "get_messages", success: true });
 		await h.waitIdle();
 		expect(h.chatSpawns(CHAT_A)).toHaveLength(1);
+	});
+
+	test("get_messages on a chat with no session file answers empty without spawning", async () => {
+		const h = helper();
+		await h.rpc(CHAT_A, { id: "g1", type: "get_messages" });
+		expect(h.rpcs(CHAT_A)).toEqual([
+			{
+				id: "g1",
+				type: "response",
+				command: "get_messages",
+				success: true,
+				data: { messages: [] },
+			},
+		]);
+		await h.waitIdle();
+		expect(h.spawns()).toHaveLength(0);
 	});
 });
 

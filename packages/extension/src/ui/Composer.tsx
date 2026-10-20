@@ -121,8 +121,8 @@ export function Composer(props: ComposerProps) {
 	}, [props.draft]);
 
 	useEffect(() => {
-		if (props.focusSignal > 0) input.current?.focus();
-	}, [props.focusSignal]);
+		if (props.focusSignal > 0 && !props.disabled) input.current?.focus();
+	}, [props.focusSignal, props.disabled]);
 
 	useEffect(() => {
 		const element = input.current;

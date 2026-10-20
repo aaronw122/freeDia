@@ -1,5 +1,5 @@
 import type { ChatSummary } from "freedia/protocol";
-import { type ReactNode, useEffect, useReducer, useState } from "react";
+import { type ReactNode, useEffect, useReducer, useRef, useState } from "react";
 import type {
 	ChatClient,
 	ConnectionState,
@@ -177,6 +177,17 @@ export function ChatApp({ client, store, events }: ChatAppProps) {
 		};
 	}, [client, connection, chatId]);
 
+	const restoredChat = useRef("");
+	useEffect(() => {
+		if (connection !== "connected" || !chatId) return;
+		if (restoredChat.current === chatId) return;
+		restoredChat.current = chatId;
+		client.openChat(chatId).then(
+			(messages) => dispatch({ type: "restored", chatId, messages }),
+			() => undefined,
+		);
+	}, [client, connection, chatId]);
+
 	const loadHistory = () => {
 		setHistory({ status: "loading" });
 		client.listChats().then(
@@ -207,6 +218,7 @@ export function ChatApp({ client, store, events }: ChatAppProps) {
 
 	const openChat = (id: string) => {
 		setHistory(null);
+		restoredChat.current = id;
 		client.openChat(id).then(
 			(messages) => dispatch({ type: "loaded", chatId: id, messages }),
 			(error) =>
