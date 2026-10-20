@@ -42,15 +42,16 @@ GlobalRegistrator.register({ url: "https://example.com/" });
 for (const [key, descriptor] of runtimeDescriptors) {
 	Object.defineProperty(globalThis, key, { ...descriptor, configurable: true });
 }
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 plugin({
-	name: "css-as-text",
+	name: "import-as-text",
 	setup(build) {
-		build.onResolve({ filter: /\.css(\?inline)?$/ }, (args) => ({
-			path: resolve(dirname(args.importer), args.path.replace(/\?inline$/, "")),
-			namespace: "css-text",
+		build.onResolve({ filter: /(\.css|\?inline|\?raw)$/ }, (args) => ({
+			path: resolve(dirname(args.importer), args.path.replace(/\?\w+$/, "")),
+			namespace: "import-as-text",
 		}));
-		build.onLoad({ filter: /.*/, namespace: "css-text" }, (args) => ({
+		build.onLoad({ filter: /.*/, namespace: "import-as-text" }, (args) => ({
 			contents: `export default ${JSON.stringify(readFileSync(args.path, "utf8"))};`,
 			loader: "js",
 		}));
