@@ -56,9 +56,15 @@ export function chromeWindowStore(): WindowStore {
 	};
 }
 
-export function memoryWindowStore(initial: WindowLayout | null = null) {
+export interface MemoryWindowStore extends WindowStore {
+	saved(): WindowLayout | null;
+}
+
+export function memoryWindowStore(
+	initial: WindowLayout | null = null,
+): MemoryWindowStore {
 	let saved = initial;
-	const store: WindowStore & { saved(): WindowLayout | null } = {
+	return {
 		async load() {
 			return saved;
 		},
@@ -67,7 +73,6 @@ export function memoryWindowStore(initial: WindowLayout | null = null) {
 		},
 		saved: () => saved,
 	};
-	return store;
 }
 
 export function defaultRect(viewport: Viewport): Rect {

@@ -55,7 +55,6 @@ export interface TranscriptState {
 export type TranscriptAction =
 	| { type: "client"; event: ClientEvent }
 	| { type: "send"; text: string }
-	| { type: "accepted" }
 	| { type: "send_failed"; message: string }
 	| { type: "reset"; chatId: string }
 	| { type: "loaded"; chatId: string; messages: PiRpcRecord[] }
@@ -469,10 +468,6 @@ export function transcriptReducer(
 				],
 			};
 		}
-		case "accepted":
-			return WAITING_PHASES.has(state.phase)
-				? { ...state, phase: "thinking" }
-				: state;
 		case "send_failed":
 			if (!state.turns.some((turn) => turn.kind === "user" && turn.pending)) {
 				return state;

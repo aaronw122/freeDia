@@ -44,7 +44,6 @@ for (const [key, descriptor] of runtimeDescriptors) {
 }
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
-
 plugin({
 	name: "import-as-text",
 	setup(build) {

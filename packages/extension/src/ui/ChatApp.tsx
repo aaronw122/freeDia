@@ -184,10 +184,11 @@ export function ChatApp({ client, store, events }: ChatAppProps) {
 
 	const send = (text: string) => {
 		dispatch({ type: "send", text });
-		client.send(text).then(
-			() => dispatch({ type: "accepted" }),
-			(error) => dispatch({ type: "send_failed", message: errorText(error) }),
-		);
+		client
+			.send(text)
+			.catch((error) =>
+				dispatch({ type: "send_failed", message: errorText(error) }),
+			);
 	};
 
 	const newChat = () => {
