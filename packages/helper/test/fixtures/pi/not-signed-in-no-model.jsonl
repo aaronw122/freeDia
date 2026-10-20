@@ -1,0 +1,8 @@
+{"t":1,"dir":"stdin","record":{"id":"r1","type":"get_state"}}
+{"t":104,"dir":"stderr","record":"Warning: No project session found with id 'c-nosignin-1'; creating a new session with that id."}
+{"t":123,"dir":"stdout","record":{"id":"r1","type":"response","command":"get_state","success":true,"data":{"model":{"id":"unknown","name":"unknown","api":"unknown","provider":"unknown","baseUrl":"","reasoning":false,"input":[],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":0,"maxTokens":0},"thinkingLevel":"off","isStreaming":false,"isCompacting":false,"steeringMode":"one-at-a-time","followUpMode":"one-at-a-time","sessionFile":"$TMP/freedia-s1/2026-10-19T23-15-55-769Z_c-nosignin-1.jsonl","sessionId":"c-nosignin-1","autoCompactionEnabled":true,"messageCount":0,"pendingMessageCount":0}}}
+{"t":123,"dir":"stdin","record":{"id":"r2","type":"get_available_models"}}
+{"t":123,"dir":"stdout","record":{"id":"r2","type":"response","command":"get_available_models","success":true,"data":{"models":[]}}}
+{"t":123,"dir":"stdin","record":{"id":"r3","type":"prompt","message":"hello"}}
+{"t":123,"dir":"stdout","record":{"id":"r3","type":"response","command":"prompt","success":false,"error":"No API key found for the selected model.\n\nUse /login to log into a provider via OAuth or API key. See:\n  $HOME/.freedia/pi/node_modules/@earendil-works/pi-coding-agent/docs/providers.md\n  $HOME/.freedia/pi/node_modules/@earendil-works/pi-coding-agent/docs/models.md"}}
+{"t":126,"dir":"exit","record":{"code":0}}

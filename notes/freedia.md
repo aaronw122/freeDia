@@ -20,7 +20,7 @@ Architecture and decision log: `diagrams/initial-pi-ai-integration.md`.
 - **New chat:** "+" button in the chat bar header starts a fresh chat on the same tab.
 - **Model picker** in the chat bar. Lists every model pi has access to (Claude Sonnet/Opus/Haiku, GPT/Codex, Gemini, local models, ...). Default: Claude Sonnet. Switching mid-chat keeps the history.
 - **Any provider:** sign-in and provider support come from pi-ai (subscriptions, API keys, local models). Adding a provider requires no freeDia code changes.
-- **Shortcuts:** Chrome default Cmd+Shift+E (Ctrl+Shift+E on Windows/Linux); Dia default Cmd+E (Dia detected, or chosen at first run). Both changeable.
+- **Shortcuts:** default ⌘E in both Chrome and Dia, chosen at onboarding (keep ⌘E or pick another) and changeable in settings. ⇧⌘E (Ctrl+Shift+E on Windows/Linux) always works as a backup. No browser detection.
 - **Window modes (v1):**
   - **Floating chat window (page overlay):** matches Dia's floating chat. Floats over the page; draggable, resizable and expandable. Each chat belongs to its tab.
   - **Stretch: float above other apps** (Document Picture-in-Picture). The "ideal world" goal; depends on an early test.
@@ -67,7 +67,7 @@ Architecture and decision log: `diagrams/initial-pi-ai-integration.md`.
 10. Clear, actionable errors when: the helper isn't installed, pi isn't signed in to the selected provider, or the provider rejects the request or hits a rate limit. Each error tells the user how to fix it.
 11. The agent cannot write files or run commands. It reads `~/.freedia/chats` only when the user asks about previous chats.
 12. Each overlay chat stays with its own tab; switching tabs shows that tab's chat.
-13. Cmd+E works in Dia and Cmd+Shift+E works in Chrome, and both can be rebound.
+13. ⌘E opens the chat by default in both browsers; the user can pick a different shortcut at onboarding or in settings, and ⇧⌘E always works.
 14. Two chats in different tabs can stream at the same time; stopping one doesn't affect the other; after a reply finishes, the next message resumes the chat with full context.
 
 ## TRUST
@@ -82,7 +82,7 @@ Architecture and decision log: `diagrams/initial-pi-ai-integration.md`.
 ## Open questions (resolve in the plan or early tests)
 
 - Does Document Picture-in-Picture work when opened from an extension's page overlay? If not, the stretch goal is dropped; the page overlay already covers Dia's floating chat.
-- Does Cmd+E reach the extension in Dia, and can the extension detect Dia?
+- Does ⌘E reach the extension in Dia once Dia's own ⌘E is turned off? (Detection settled: none; the user picks the shortcut at onboarding.)
 - Does Chrome accept Cmd+Shift+E as an extension default without clashes?
 - How much page text to send (a size cap, and how to extract it)?
 - pi RPC details: streaming events, switching models mid-session, aborting; one pi process per chat vs. starting pi per message.
