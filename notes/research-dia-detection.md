@@ -1,0 +1,50 @@
+# Telling Dia from Chrome: methods, tested
+
+Dia 1.52.0 (build 88431, Chromium 155.0.8059.40). Chrome side: Playwright's Chrome for Testing 156.0.8078.4 ("CfT").
+Scratch files: `/tmp/dia-detect/` (probe extension in `probe/`, native-host probe in `host/`, test drivers in `drive*.ts`, raw results in `result-*.json`).
+
+## How Dia was run (isolated, Aaron's profile untouched)
+- Copied the app with `cp -cR /Applications/Dia.app /tmp/dia-detect/DiaProbe.app` (APFS clone). Changed **CFBundleIdentifier to `company.thebrowser.dia.probe`**, removed `embedded.provisionprofile`, and **re-signed ad hoc** (`codesign --force --deep --sign -`). With a different team ID and bundle ID, the copy can't reach Dia's keychain groups or Dia's prefs domain.
+- Started the binary directly, never with `open`: `DiaProbe.app/Contents/MacOS/Dia --user-data-dir=/tmp/dia-detect/home/ud --remote-debugging-port=… --use-mock-keychain`, with `HOME` and `CFFIXED_USER_HOME` set to `/tmp/dia-detect/home`. Dia treats `--user-data-dir` as its app-support root and creates `<dir>/User Data/` inside it.
+- On each verified run, the copy started with no extension loaded and no URL. Before loading anything, `lsof -p <pid>` showed 76–293 open files under the temp dir and **0** under `~/Library/Application Support/Dia` or `~/Library/Caches/company.thebrowser.dia/`. Only then was the probe loaded, through CDP `Extensions.loadUnpacked`. Aaron's `SingletonLock` still points to pid 79575, and 79575 kept running throughout. The first run (before Main's rule arrived) loaded the extension at launch; the post-hoc checks above were clean for it too.
+- The one leak: cfprefsd ignores the fake HOME, so `~/Library/Preferences/company.thebrowser.dia.probe.plist` was created. It is a new domain, not Dia's, and I deleted it. The Dia runs opened visible windows; the copy's onboarding loaded an Atlassian sign-up page, and nothing was signed into.
+
+## Results (O = observed in Dia, C = observed in CfT)
+| # | Method | Where it runs | Permission | Needs helper? | Dia | Chrome | Verdict |
+|---|---|---|---|---|---|---|---|
+| A | `chrome.runtime.sendMessage("cnmkapobonpnoikggfbonmdkknnglejo", …)` | content script, service worker, extension page | **none** | no | lastError `Receiving end uses different message serialization format.` (O, all 3 contexts) | `Receiving end does not exist.` (C, all 3) | **Reliable. Primary.** |
+| B | Helper: path of parent process via `proc_pidpath(getppid())` | helper | – | yes | `/…/DiaProbe.app/Contents/MacOS/Dia` (O) | `/…/Google Chrome for Testing.app/Contents/MacOS/…` (C) | **Reliable. Helper-side primary.** |
+| C | Helper: inherited `__CFBundleIdentifier` | helper | – | yes | Dia's main process (79575) has `__CFBundleIdentifier=company.thebrowser.dia` and `XPC_SERVICE_NAME=application.company.thebrowser.dia.*` (O, `ps -E`). The host inherits the browser's env (O: host saw the HOME I gave Dia) | Chrome from the Dock would carry `com.google.Chrome` `[NOT VERIFIED: Chrome not installed]` | Good fallback for B. Wrong if the browser was started from a terminal (then it's the terminal's ID). |
+| D | `chrome.management.get(<Dia chat id>)` | service worker, extension page | `management` (install warning "Manage your apps, extensions, and themes") | no | `{name:"Dia chat", installType:"other", mayDisable:false}` (O). `getAll()` hides it | "Failed to find extension" (C) | Works, but the permission costs too much. Don't use. |
+| E | High-entropy client hints | any | none | no | brands/fullVersionList = `Chromium 155.0.8059.40` + `Not(A:Brand 24` only. model "", platform macOS (O) | `Chromium 156.0.8078.4` + GREASE (C) | **Dead end.** No custom brand: in ArcCore's strings "Google Chrome"/"Chromium" appear only in stock Chromium code paths (`arccore.off.txt`) |
+| F | `fetch("chrome-extension://<dia-id>/manifest.json")` | any | none | no | `Failed to fetch` (O) | `Failed to fetch` (C) | Dead end. Dia chat has no `web_accessible_resources` |
+| G | Dia JS globals (`window.__dia`, `__diaVersion`, `__diaContext`, …) | – | – | – | Not present on example.com in the main world (O, CDP eval), the content-script world, or extension contexts (O). `window.chrome` keys in the page = `loadTimes,csi,app` | same | Dead end. The strings at `Dia.off.txt` 0x626c010 (`window.__dia = true;`, `window.__diaVersion = `) sit in ADK2/SupertabFrontend code that Dia injects only into its own artifact/assistant web contents |
+| H | Extra `chrome.*` APIs | extension contexts | – | – | `chrome` keys and `chrome.runtime` keys identical to CfT (O/C) | | Dead end |
+| I | `runtime.getPlatformInfo` | SW/page | none | no | `{os:mac, arch:arm64, nacl_arch:arm}` | `{os:mac, arch:arm64}` | Version artifact (155 vs 156), not Dia. Don't use |
+| J | Chromium version (155.0.8059.40, not a public Chrome stable build number) | any | none | no | O | | Fragile; breaks with each Dia/Chrome update |
+| K | Media queries / `document.fonts.check` | page/CS | none | no | identical (O/C). `fonts.check` returns true even for fonts that aren't installed | | Dead end |
+| L | Per-browser native-host manifests | helper | – | – | **Not possible** (see below) | | Dead end |
+| M | argv from the browser | helper | – | – | `[<exe>, "chrome-extension://<id>/"]` (O) | same (C) | Same in both (on macOS, `--parent-window` is Windows-only) |
+
+### Why A works (the identifier Aaron suspected exists)
+- Dia ships a component extension, "Dia chat" (`Contents/Resources/web-chat-resources/dist/manifest.json`). Its fixed `key` gives the ID **`cnmkapobonpnoikggfbonmdkknnglejo`** (sha256 of the DER key → first 32 hex chars mapped to a–p; the CDP targets confirm `chrome-extension://cnmkapobonpnoikggfbonmdkknnglejo/background.js` running in Dia). It loads in a fresh profile, so it doesn't depend on Aaron's profile or sign-in.
+- Its manifest has `"message_serialization": "structured_clone"` and no `externally_connectable`. In Chromium, `extensions/browser/api/messaging/message_service.cc` (main, around lines 594–608) first allows the connection, since no `externally_connectable` means every extension may connect. It then rejects a JSON-format sender with `kReceivingEndIncompatibleMessageSerializationFormat` before checking for any listener. The same string is in ArcCore at offset 0xc42af3e. In Chrome the ID doesn't exist, so the error is `Receiving end does not exist.`
+- The second bundled manifest ("Dia Home Surface", ID `odeipjeilffnjbmabbdceaffnmnbofnj`) is not loaded: `management.get` → not found (O).
+- Fragility: (1) freeDia must keep the default JSON serialization. If freeDia sets `structured_clone`, the formats match and Dia also returns "does not exist". (2) If Dia changes the chat extension's key or serialization, this check silently reports "not Dia". So treat the result as three states: serialization error = Dia; "does not exist" = probably Chrome; anything else = unknown, fall back.
+
+### Native messaging in Dia (corrects plan task 1.x installer)
+- **Dia does not read `~/Library/Application Support/Dia/…/NativeMessagingHosts`.** I placed three manifests, each pointing to a different symlink (the host reports `$0`). Dia launched the one in `$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/` (O, `PROBE_INVOKED_AS=…/via-googlechrome-dir.sh`). With that file removed, it reported `Specified native messaging host not found.` even with manifests in `<udd>/NativeMessagingHosts` and `<udd>/User Data/NativeMessagingHosts` (O).
+- String evidence: ArcCore 0xd06d914–0xd06d963 (`Google/Chrome`, `/Library/Google/Chrome/NativeMessagingHosts`, `NativeMessagingHosts`, `User Data`) next to Arc code. Dia overrides Chromium's path provider. Upstream `chrome_paths.cc` uses `DIR_USER_DATA/NativeMessagingHosts`, which is why CfT found the manifest in its own user-data dir (C).
+- Consequences: Chrome and Dia read **the same** manifest, so a separate per-browser manifest (L) or argv[0] symlink can't work. The installer must write `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.freedia.helper.json`, creating the directory even if Chrome isn't installed. The manifest's `allowed_origins` must list every freeDia extension ID. The plan's `<browser>` path for Dia is wrong.
+- Parent process: Chromium launches the host directly, and `getppid()` is the browser's main process (O in both). Mechanics were checked with a Bun spawner and in both browsers. `bun:ffi` `proc_pidpath` from `/usr/lib/libSystem.B.dylib` works with no special rights (`host/probe-host.ts`). To be robust to a renamed or copied app, read `<path up to .app>/Contents/Info.plist` and compare `CFBundleIdentifier` to `company.thebrowser.dia` (Chrome: `com.google.Chrome`). Matching on `/Dia.app/` also works.
+
+## Recommendation
+1. **Primary: method A in the extension.** It needs no permission, works in content scripts, the service worker and extension pages, works before the helper is installed, and takes one async call. Cache the result in `chrome.storage.local` at service-worker startup.
+2. **Fallback: method B (then C) in the helper.** Report `browser: "dia" | "chrome" | "unknown"` in the `helper.hello` reply. Use it when A returns "unknown", and log any disagreement with A, since that means Dia changed.
+3. **Keep the "Using Dia?" setting as a manual override (auto / on / off), defaulting to auto.** Detection now works in practice, so the first-run question can go. The override covers the case where A fails silently after a Dia update and the helper isn't installed yet, plus other Chromium browsers.
+- Don't use: client hints, UA, globals, `fetch` of extension URLs, version numbers, `management`.
+
+## Probe for Aaron's real Dia (optional; the isolated copy is the same build)
+1. `chrome://extensions` in Dia → Developer mode → Load unpacked → `/tmp/dia-detect/probe` (ID `dnjggjabiapaafeoemedkjpppplddgkh`; it asks for management, tabs and nativeMessaging).
+2. Click the toolbar icon (opens `probe.html`), or open any https page, then reload `probe.html`. Copy the JSON.
+3. **Remove the extension afterwards** (it reads all tab URLs).
