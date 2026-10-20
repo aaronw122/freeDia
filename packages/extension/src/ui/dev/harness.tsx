@@ -78,9 +78,7 @@ async function ask(root: ShadowRoot, text: string) {
 }
 
 const scenes: Record<string, Scene> = {
-	async chip(client) {
-		client.addQuote(SELECTION);
-	},
+	async chip() {},
 	async streaming(client) {
 		const run = retextRun(
 			promptRun("stream"),
@@ -117,9 +115,7 @@ const scenes: Record<string, Scene> = {
 			.querySelector<HTMLButtonElement>("button[aria-label=History]")
 			?.click();
 	},
-	async live(client) {
-		client.addQuote(SELECTION);
-	},
+	async live() {},
 };
 
 async function main() {
@@ -145,8 +141,9 @@ async function main() {
 						run: retextRun(promptRun("stream"), question, CODE_REPLY),
 					},
 	});
+	if (sceneName === "chip" || sceneName === "live") client.addQuote(SELECTION);
 	mountChatWithStore(root, client, memoryWindowStore());
-	await frame();
+	await client.subscribed();
 	await frame();
 	await (scenes[sceneName] ?? scenes.live)?.(client, root);
 	await frame();
