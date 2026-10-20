@@ -68,6 +68,31 @@ export interface ChatDeleteResponse {
 	chatId: string;
 }
 
+export interface PagePutRequest {
+	type: "page.put";
+	id: string;
+	chatId: string;
+	markdown: string;
+}
+
+export interface PagePutResponse {
+	type: "page.put";
+	id: string;
+	chatId: string;
+}
+
+export interface PageClearRequest {
+	type: "page.clear";
+	id: string;
+	chatId: string;
+}
+
+export interface PageClearResponse {
+	type: "page.clear";
+	id: string;
+	chatId: string;
+}
+
 export type ChatState = "starting" | "queued";
 
 export interface ChatStatus {
@@ -90,12 +115,16 @@ export interface HelperError {
 export type HelperCommand =
 	| HelperHelloRequest
 	| ChatListRequest
-	| ChatDeleteRequest;
+	| ChatDeleteRequest
+	| PagePutRequest
+	| PageClearRequest;
 
 export type HelperReply =
 	| HelperHelloResponse
 	| ChatListResponse
-	| ChatDeleteResponse;
+	| ChatDeleteResponse
+	| PagePutResponse
+	| PageClearResponse;
 
 export type HelperPush = ChatStatus | HelperError;
 
@@ -147,7 +176,10 @@ export function isHelperCommand(value: unknown): value is HelperCommand {
 		case "chat.list":
 			return true;
 		case "chat.delete":
+		case "page.clear":
 			return isChatId(value.chatId);
+		case "page.put":
+			return isChatId(value.chatId) && typeof value.markdown === "string";
 		default:
 			return false;
 	}

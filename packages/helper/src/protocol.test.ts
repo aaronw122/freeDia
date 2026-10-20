@@ -100,6 +100,16 @@ describe("helper wire format", () => {
 			`{"type":"chat.delete","id":"h3","chatId":"${CHAT_ID}"}`,
 		],
 		[
+			"page.put",
+			isHelperCommand,
+			`{"type":"page.put","id":"h4","chatId":"${CHAT_ID}","markdown":"# Title"}`,
+		],
+		[
+			"page.clear",
+			isHelperCommand,
+			`{"type":"page.clear","id":"h5","chatId":"${CHAT_ID}"}`,
+		],
+		[
 			"chat.status",
 			isChatStatus,
 			`{"type":"chat.status","chatId":"${CHAT_ID}","state":"queued"}`,
@@ -132,6 +142,16 @@ describe("helper wire format", () => {
 			"chat.delete bad chatId",
 			isHelperCommand,
 			{ type: "chat.delete", id: "h1", chatId: "../../x" },
+		],
+		[
+			"page.put bad chatId",
+			isHelperCommand,
+			{ type: "page.put", id: "h4", chatId: "../../x", markdown: "" },
+		],
+		[
+			"page.put non-string markdown",
+			isHelperCommand,
+			{ type: "page.put", id: "h4", chatId: CHAT_ID, markdown: 7 },
 		],
 		[
 			"chat.status bad chatId",
