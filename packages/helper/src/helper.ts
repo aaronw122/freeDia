@@ -102,7 +102,8 @@ export class Helper {
 	private models: Promise<PiRpcRecord | undefined> | undefined;
 	private readonly titled = new Set<string>();
 	private readonly pendingTitles = new Map<string, string>();
-	private readonly titleJobs = new Set<Promise<void>>();
+	private readonly jobs = new Set<Promise<void>>();
+	private readonly starting = new Map<string, PiRpcRecord | undefined>();
 	private readonly pageUse = new Map<string, number>();
 	private shuttingDown = false;
 	private idleWaiters: Array<() => void> = [];
@@ -129,6 +130,24 @@ export class Helper {
 				return Promise.resolve();
 			}
 			const { chatId, rpc } = message;
+			if (rpc.type === "abort") {
+				if (this.dropQueued(chatId)) {
+					this.checkIdle();
+					this.reply(chatId, this.response(rpc, "abort", true));
+					return Promise.resolve();
+				}
+				if (this.starting.has(chatId)) {
+					this.starting.set(chatId, rpc);
+					return Promise.resolve();
+				}
+			}
+			if (
+				rpc.type === "prompt" &&
+				this.liveProcess(chatId)?.runActive !== true &&
+				!this.starting.has(chatId)
+			) {
+				this.starting.set(chatId, undefined);
+			}
 			return this.inChain(chatId, () => this.forward(chatId, rpc));
 		}
 		if (!isHelperCommand(message)) {
@@ -150,6 +169,7 @@ export class Helper {
 				this.drainQueue();
 				this.updater
 					?.maybeCheck()
+					.then(() => this.checkIdle())
 					.catch((error) => this.log(`update check failed: ${error}`));
 				return Promise.resolve();
 			case "chat.list":
@@ -205,10 +225,14 @@ export class Helper {
 	async shutdown(): Promise<void> {
 		this.shuttingDown = true;
 		this.queue = [];
+		await this.whenIdle();
+		this.updater?.applyIfReady();
+	}
+
+	async whenIdle(): Promise<void> {
 		while (!this.idle()) {
 			await new Promise<void>((resolve) => this.idleWaiters.push(resolve));
 		}
-		this.updater?.applyIfReady();
 	}
 
 	runningChats(): string[] {
@@ -218,9 +242,21 @@ export class Helper {
 	private idle(): boolean {
 		return (
 			this.processes.size === 0 &&
-			this.titleJobs.size === 0 &&
+			this.slots.size === 0 &&
+			this.starting.size === 0 &&
+			this.jobs.size === 0 &&
 			this.queue.length === 0
 		);
+	}
+
+	private track(job: Promise<void>): void {
+		const tracked = job
+			.catch((error) => this.log(`${error}`))
+			.finally(() => {
+				this.jobs.delete(tracked);
+				this.checkIdle();
+			});
+		this.jobs.add(tracked);
 	}
 
 	private checkIdle(): void {
@@ -279,17 +315,15 @@ export class Helper {
 	private async forward(chatId: string, rpc: PiRpcRecord): Promise<void> {
 		this.pageUse.set(chatId, this.now());
 		if (!piInstalled(this.paths)) {
+			if (rpc.type === "prompt") {
+				this.endStart(chatId);
+			}
 			this.output.message(this.error("pi_missing", { id: rpc.id, chatId }));
 			return;
 		}
 		const live = this.liveProcess(chatId);
 		switch (rpc.type) {
 			case "abort":
-				if (this.dropQueued(chatId)) {
-					this.reply(chatId, { type: "agent_settled", aborted: true });
-					this.reply(chatId, this.response(rpc, "abort", true));
-					return;
-				}
 				if (live === undefined) {
 					this.reply(chatId, this.response(rpc, "abort", true));
 					return;
@@ -313,6 +347,16 @@ export class Helper {
 				}
 			}
 		}
+	}
+
+	private endStart(chatId: string): boolean {
+		const abort = this.starting.get(chatId);
+		this.starting.delete(chatId);
+		if (abort === undefined) {
+			return false;
+		}
+		this.reply(chatId, this.response(abort, "abort", true));
+		return true;
 	}
 
 	private response(
@@ -342,6 +386,7 @@ export class Helper {
 	private async prompt(chatId: string, rpc: PiRpcRecord): Promise<void> {
 		const live = this.liveProcess(chatId);
 		if (live !== undefined && (live.runActive || this.slots.has(chatId))) {
+			this.starting.delete(chatId);
 			this.send(live, rpc);
 			return;
 		}
@@ -352,6 +397,9 @@ export class Helper {
 				if (auth.status === "ready") {
 					this.readyProviders.add(provider);
 				} else if (auth.status === "not_ready" || auth.status === "invalid") {
+					if (this.endStart(chatId)) {
+						return;
+					}
 					this.output.message(
 						this.error("not_signed_in", {
 							id: rpc.id,
@@ -364,22 +412,31 @@ export class Helper {
 				}
 			}
 		}
+		if (this.starting.get(chatId) !== undefined) {
+			this.endStart(chatId);
+			return;
+		}
 		if (this.slots.size >= this.maxConcurrent) {
+			this.starting.delete(chatId);
 			this.queue.push({ chatId, rpc });
 			this.output.message({ type: "chat.status", chatId, state: "queued" });
 			return;
 		}
+		this.slots.add(chatId);
 		await this.startPrompt(chatId, rpc);
 	}
 
 	private async startPrompt(chatId: string, rpc: PiRpcRecord): Promise<void> {
-		this.slots.add(chatId);
 		let chat = this.liveProcess(chatId);
 		if (chat === undefined) {
 			this.output.message({ type: "chat.status", chatId, state: "starting" });
 			chat = await this.spawnOrReport(chatId, rpc);
 		}
-		if (chat === undefined) {
+		if (chat !== undefined && this.starting.get(chatId) !== undefined) {
+			this.closeIfIdle(chat);
+			await chat.exited;
+		}
+		if (this.endStart(chatId) || chat === undefined) {
 			this.releaseSlot(chatId);
 			return;
 		}
@@ -413,6 +470,8 @@ export class Helper {
 	private drainQueue(): void {
 		while (this.slots.size < this.maxConcurrent && this.queue.length > 0) {
 			const next = this.queue.shift() as QueuedPrompt;
+			this.slots.add(next.chatId);
+			this.starting.set(next.chatId, undefined);
 			this.inChain(next.chatId, () => this.startPrompt(next.chatId, next.rpc));
 		}
 		this.checkIdle();
@@ -577,7 +636,7 @@ export class Helper {
 			title !== undefined &&
 			!this.queue.some((item) => item.chatId === chat.chatId)
 		) {
-			this.inChain(chat.chatId, () => this.applyTitle(chat.chatId));
+			this.track(this.inChain(chat.chatId, () => this.applyTitle(chat.chatId)));
 		}
 		this.checkIdle();
 	}
@@ -647,13 +706,7 @@ export class Helper {
 		if (session.name !== undefined || session.userMessages !== 1) {
 			return;
 		}
-		const job = this.makeTitle(chatId, session.firstPrompt, session.model)
-			.catch((error) => this.log(`title for ${chatId} failed: ${error}`))
-			.finally(() => {
-				this.titleJobs.delete(job);
-				this.checkIdle();
-			});
-		this.titleJobs.add(job);
+		this.track(this.makeTitle(chatId, session.firstPrompt, session.model));
 	}
 
 	private async makeTitle(

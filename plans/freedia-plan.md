@@ -106,6 +106,7 @@ env -i HOME=… PATH=… PI_CODING_AGENT_DIR=~/.freedia/pi-agent BUN_BE_BUN=1 \
 3. Over 8 words → cut to 8. Title call fails → no name is written, and `chat.list` falls back to the first 8 words of the first question.
 
 **Stop a reply.** The stop button sends pi's `abort` command; the helper forwards it to that chat's pi process. pi emits `agent_settled` with `aborted: true`, then the `abort` response; the helper forwards both and only then closes pi's stdin (pi exits 0). The half-finished reply is kept: saved as an assistant message with `stopReason: "aborted"`, returned by `get_messages`, and sent to the model as context on the next prompt. `abort` also cancels a pending auto-retry. A `prompt` sent while a run is active is rejected by pi (`success: false`, "Agent is already processing…"), so the UI disables send during a run.
+An `abort` for a chat whose prompt is still `queued` or `starting` never reaches pi: the helper drops the queued prompt (or closes the just-spawned pi before the prompt is written) and answers with pi's own abort response shape, `{ chatId, rpc: { id, type: "response", command: "abort", success: true } }`, and no `agent_settled`; the UI treats that response as the end of the run.
 
 **Errors from pi (forwarded untouched; the UI maps them to fix text):**
 - Not signed in: the `prompt` response fails with `success: false` and an `error` starting `No API key found for …`. It is a response, not an event.
