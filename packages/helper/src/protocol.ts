@@ -103,7 +103,8 @@ export type ExtensionToHelper = Envelope<ForwardedRpc> | HelperCommand;
 
 export type HelperToExtension = Envelope | HelperReply | HelperPush;
 
-export const CHAT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/;
+export const CHAT_ID_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 const forwardedRpcTypes: ReadonlySet<string> = new Set(FORWARDED_RPC_TYPES);
 
