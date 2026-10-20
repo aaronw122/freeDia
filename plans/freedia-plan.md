@@ -30,9 +30,9 @@ Decided 2026-10-20:
 
 ## Environment prerequisites
 
-- Bun ≥ 1.4 for development (machine has 1.2.16 → `bun upgrade`). Bun 1.2.16 crashes pi on startup (`webidl.util.markAsUncloneable is not a function`); Bun 1.4.3 runs pi 1.3.0 and answers `--mode rpc` `get_state` (verified 2026-10-19). Measured under Bun 1.4.3: idle pi RPC process ~91 MB RSS; spawn → first RPC response ~180 ms (430 ms first run, uncached disk).
-- No Node required at runtime. Node ≥ 22.19 is only the fallback for pi if S1 finds a Bun incompatibility. Local Node is 21.7.3.
-- pi installed with npm (`npm i @earendil-works/pi-coding-agent`; `bun add` currently 404s on `@aws-sdk/credential-provider-http@3.972.77`) and signed in to at least one provider for manual testing.
+- Bun ≥ 1.4 for development. Bun 1.2.16 crashes pi on startup (`webidl.util.markAsUncloneable is not a function`). Measured in S1 under Bun 1.4.3 with pi 1.3.0: ~105–140 MB RSS per pi process (idle or streaming); spawn → first RPC response ~120 ms warm, ~180–210 ms first run; resuming a 200-turn, 5.6 MB session ~130–180 ms. pi also runs from inside the `bun build --compile` helper with `BUN_BE_BUN=1`.
+- No Node at runtime and no Node fallback: S1 found no Bun incompatibility (plain and compiled). Local Node is 21.7.3, too old for pi anyway.
+- pi pinned at 1.3.0. `bun add @earendil-works/pi-coding-agent@1.3.0` works with Bun 1.4.3 (the earlier 404 is gone, re-tested 2026-10-19). Signed in to at least one provider for manual testing.
 - Chrome is not installed; Dia is. Automated tests use Playwright's bundled Chromium. Dia used for manual Cmd+E checks.
 
 ## Contract (frozen after Bucket 0)
@@ -58,7 +58,7 @@ Transport: extension service worker ↔ helper over `chrome.runtime.connectNativ
 | `get_messages`                       | Render a reopened chat                                                                                                                            |
 | `get_state`                          | Status (model, streaming, etc.)                                                                                                                   |
 
-Blocked on purpose: `bash` (runs shell commands directly, bypassing `--tools`), `export_html`, `fork`, `clone`, `switch_session`, `new_session`, compaction/queue settings. Final list confirmed in S1. `set_session_name` is also blocked for the extension; only the helper sends it, for chat titles.
+Blocked on purpose: every other pi 1.3.0 command: `bash`, `abort_bash`, `steer`, `follow_up`, `clear_queue`, `new_session`, `switch_session`, `fork`, `clone`, `get_fork_messages`, `get_entries`, `get_tree`, `export_html`, `compact`, `set_auto_compaction`, `set_auto_retry`, `abort_retry`, `set_steering_mode`, `set_follow_up_mode`, `cycle_model`, `set_thinking_level`, `cycle_thinking_level`, `get_available_thinking_levels`, `get_session_stats`, `get_last_assistant_text`, `get_commands`, `extension_ui_response`. RPC `bash` is the dangerous one: S1 saw it run a real shell even with `--tools read,grep,find,ls`. `set_session_name` is also blocked for the extension; only the helper sends it, for chat titles.
 
 **Helper's own commands (no `rpc` field; pi has no equivalent):**
 
@@ -81,15 +81,21 @@ Exact JSON for each is pinned in `packages/helper/src/protocol.test.ts`.
 **pi launch (one process per active chat):**
 
 ```sh
-PI_CODING_AGENT_DIR=~/.freedia/pi-agent \
+env -i HOME=… PATH=… PI_CODING_AGENT_DIR=~/.freedia/pi-agent BUN_BE_BUN=1 \
 <bun> <pi>/dist/bundle/cli.js --mode rpc \
   --session-dir ~/.freedia/chats --session-id <chatId> \
-  --model <id> --tools read,grep,find,ls \
-  --no-extensions --no-skills --no-prompt-templates --no-context-files \
+  [--model <id>] \
+  --tools read,grep,find,ls \
+  --no-extensions --no-skills --no-prompt-templates --no-context-files --no-mcp --no-themes \
   --append-system-prompt "<freeDia rules>"
 ```
 
-`--session-id` creates the session if new and resumes it if it exists, so "open", "resume" and "reopen from history" are the same operation. `<bun>` is the helper's own runtime (`process.execPath` with `BUN_BE_BUN=1`). The freeDia rules: answer about the page the user is on; the message carries a page excerpt, and the full page is at `~/.freedia/pages/<chatId>.md` (read it with `read`/`grep` when the excerpt isn't enough); read-only; only read `~/.freedia/chats` when the user explicitly asks about previous chats.
+`--session-id` creates the session if new and resumes it if it exists, so "open", "resume" and "reopen from history" are the same operation. `<bun>` is the helper's own runtime (`process.execPath`); `BUN_BE_BUN=1` is required, or the compiled helper re-runs itself instead of pi. The freeDia rules: answer about the page the user is on; the message carries a page excerpt, and the full page is at `~/.freedia/pages/<chatId>.md` (read it with `read`/`grep` when the excerpt isn't enough); read-only; only read `~/.freedia/chats` when the user explicitly asks about previous chats.
+
+- **`--model` only when the chat has no session file yet. A resumed spawn never passes `--model`.** On resume, `--model` overrides the chat's model, and after one reply under it the override sticks: the user's `set_model` choice is lost for good (S1, fixtures `model-override-*`). Model changes mid-chat go through `set_model` only.
+- **Clean environment.** pi reads provider API keys from its environment (S1: `GROQ_API_KEY` from the shell made Groq models appear), so the helper starts pi with only the variables above and no `*_API_KEY` / provider tokens. freeDia uses only its own sign-ins in `~/.freedia/pi-agent`, as decided for "separate pi setup".
+- **Fixed cwd `~/.freedia`.** pi matches `--session-id` against the `cwd` stored in the session file; a different cwd silently opens an empty chat with the same ID (S1).
+- **Test hook:** e2e sets `FREEDIA_PI_EXTRA_ARGS` (e.g. `-e <faux-extension.ts> --offline --model faux/faux-1`) to run pi against the faux provider. Unset in production; never set by the extension.
 
 **Page context is part of the message text.** The extension builds the `prompt` message: URL, title, highlighted quotes, page excerpt (only when re-sent, see Page text), then the question under a fixed `## Question` heading, so the helper can find it for titling. pi stores it like any message, so follow-ups and resumed chats keep it. The full page goes to the helper with `page.put`, never into the message.
 
@@ -98,7 +104,13 @@ PI_CODING_AGENT_DIR=~/.freedia/pi-agent \
 2. It writes the result with pi's `set_session_name` (stored as a `session_info` entry; no user message is added, verified 2026-10-20): on a short-lived spawn of the chat's session if it's idle, or as the first command on its next spawn if the user already sent another message. Never with `--model` (resume rule).
 3. Over 8 words → cut to 8. Title call fails → no name is written, and `chat.list` falls back to the first 8 words of the first question.
 
-**Stop a reply.** The stop button sends pi's `abort` command; the helper just forwards it to that chat's pi process. pi stops the reply and keeps the chat open for the next message. Whether the half-finished reply is kept in the session is checked in S1.
+**Stop a reply.** The stop button sends pi's `abort` command; the helper forwards it to that chat's pi process. pi emits `agent_settled` with `aborted: true`, then the `abort` response; the helper forwards both and only then closes pi's stdin (pi exits 0). The half-finished reply is kept: saved as an assistant message with `stopReason: "aborted"`, returned by `get_messages`, and sent to the model as context on the next prompt. `abort` also cancels a pending auto-retry. A `prompt` sent while a run is active is rejected by pi (`success: false`, "Agent is already processing…"), so the UI disables send during a run.
+
+**Errors from pi (forwarded untouched; the UI maps them to fix text):**
+- Not signed in: the `prompt` response fails with `success: false` and an `error` starting `No API key found for …`. It is a response, not an event.
+- Provider rejected or rate limited: an assistant `message_end` with `stopReason: "error"` and `errorMessage` (e.g. `401 {…authentication_error…}`, `429 {…rate_limit_error…}`). Retryable errors come after `auto_retry_start` / `auto_retry_end` events: 3 attempts, 2 / 4 / 8 s.
+
+**Session files.** `~/.freedia/chats/<timestamp>_<chatId>.jsonl`, one flat folder, created only when the first message is saved: a chat with no message has no file and isn't listed. `chat.list` reads each file's header (`id`) and entries: `title` = latest `session_info.name`, else the first 8 words of the first question; `updatedAt` = latest message timestamp. `chat.delete` stops that chat's pi first (abort, wait for exit), then deletes `*_<chatId>.jsonl`.
 
 ## Multiple chats at once
 
@@ -107,10 +119,10 @@ PI_CODING_AGENT_DIR=~/.freedia/pi-agent \
 | Several chats running at the same time | One pi process per active chat (pi runs one session per process). The helper routes by `chatId`.                                                                                                                                                |
 | Keep running when you switch tabs      | The process lives in the helper, not the tab. Events keep arriving and the UI catches up when you return.                                                                                                                                       |
 | Limit load                             | Max **3** chats generating at once (setting). Extra prompts wait as `queued` and start when a slot frees.                                                                                                                                       |
-| Pause / resume later                   | No warm pool. A chat's pi process exits as soon as its reply finishes (`agent_settled`) or is stopped. The session file stays. The next command respawns pi with `--session-id`, which reloads the full context. Respawn costs ~180 ms, small next to the model's own first-token delay. |
+| Pause / resume later                   | No warm pool. A chat's pi process exits as soon as its reply finishes (`agent_settled`, not `agent_end`: retries can follow `agent_end`) or is stopped. The session file stays. The next command respawns pi with `--session-id`, which reloads the full context. Respawn costs ~120–180 ms even for a 200-turn chat, small next to the model's own first-token delay, so no idle timeout. |
 | Survive browser restart                | Same as resume: sessions are files; the tab → chatId map is in `chrome.storage.local`.                                                                                                                                                          |
 
-Memory: ~91 MB per pi process, only while a chat is generating, so at most 3 × 91 MB ≈ 0.3 GB. Nothing stays resident between messages.
+Memory: ~105–140 MB per pi process, only while a chat is generating, so at most 3 × ~140 MB ≈ 0.4 GB. Nothing stays resident between messages.
 
 ## Updates (one package, both pieces stay current)
 
@@ -168,31 +180,32 @@ Modelled on Dia (`notes/research-page-text-cap.md`, `~/code/personal/Projects/no
   - Any Bun incompatibility → fall back to Node ≥ 22.19 for pi only.
 - [ ] **0.3 Spike S2 — browser** (Playwright Chromium + manual Dia), recorded in `notes/spike-browser.md`: (a) `chrome.commands` `Command+Shift+E` fires; (b) content-script keydown Cmd+E in Dia reaches the page before Dia's chat; (c) Dia detection via `navigator.userAgentData.brands`/UA; (d) Document Picture-in-Picture opened from a content-script click/keydown on an https page, and whether it survives tab switches. Sets PiP go/no-go. Chromium side done; Dia manual checks B–D in `notes/spike-browser.md` still open.
 
-Spike outcomes may amend the contract before Bucket 1 starts.
+Spike outcomes are folded into the Contract and the tasks below (2026-10-20). Dia checks B–D are still manual.
 
 ### Bucket 1 — parallel (3 agents)
 
 - [ ] **1A Helper** (`packages/helper`)
   - Native messaging framing (stdin/stdout, 4-byte LE length).
   - Router: envelope → pi process for `chatId`; allowlist check; pi stdout lines → envelope back, untouched.
-  - Process pool: spawn on demand for a `chatId` on any command (prompt, `get_messages` for a reopened chat, etc.), max `maxConcurrent` (default 3) generating + queue, exit each process when its run settles or is aborted, `chat.status` pushes, clean shutdown when the extension disconnects (let in-flight runs finish saving, then exit).
+  - Process pool: spawn on demand for a `chatId` on any command (prompt, `get_messages` for a reopened chat, etc.), max `maxConcurrent` (default 3) generating + queue, `chat.status` pushes. Exit each process on `agent_settled`; after an `abort`, forward the `abort` response first, then close stdin. Launch exactly as in the Contract: `--model` only for a new chat, clean environment, fixed cwd, `FREEDIA_PI_EXTRA_ARGS` test hook. Clean shutdown when the extension disconnects (let in-flight runs finish saving, then exit).
   - Model list: when no chat process is running, answer `get_available_models` from a short-lived pi process and cache the result until the helper exits.
-  - `helper.hello`, `chat.list`, `chat.delete` over `~/.freedia/chats`. pi always launched with cwd `~/.freedia`.
+  - `helper.hello`, `chat.list`, `chat.delete` over `~/.freedia/chats` (see Session files). `chat.delete` stops a running pi for that chat before deleting. pi always launched with cwd `~/.freedia`.
   - Chat titles (see Contract): one-shot `--no-session` title call after the first reply, `set_session_name` on the chat's session, 8-word cut and fallback.
   - Page files: `page.put` / `page.clear` over `~/.freedia/pages/<chatId>.md`; delete after 60 min unused, on `chat.delete`, and clear the folder on startup.
-  - Preflight: pi missing, not signed in → `helper.error` with `fix` text.
+  - Preflight: pi missing → `helper.error` `pi_missing`; not signed in → `not_signed_in` via `pi auth check --provider <p> --json` (`status: ready | not_ready | invalid`, exit 0/1/2). Both with `fix` text.
   - Self-update: on `helper.hello`, at most once a day, check the npm registry for a newer `freedia`; download the new binary next to the old one, swap it after in-flight chats finish, and keep the protocol backward compatible with the previous extension version. pi version is pinned per helper release and updated with it.
   - Distribution: `bun build --compile` single binary (macOS arm64/x64 first), published to the npm registry and installed with `bunx freedia install`. Users need Bun only to run the installer; the helper binary carries its own Bun, which also runs pi, so the user's Bun version doesn't matter after install.
-  - Installer `freedia install`: copies the binary to `~/.freedia/bin/freedia-helper`; writes **one** native host manifest at `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.freedia.helper.json` (creating the folder if Chrome isn't installed) with the absolute binary path and every freeDia extension ID in `allowed_origins`. Dia reads native host manifests only from Chrome's folder, never from its own user-data dir (observed in Dia 1.52.0, `notes/research-dia-detection.md`), so this one file serves both browsers. Installs pi into `~/.freedia/pi` with `bun add` (pi pinned as a dependency of the `freedia` package; if the `bun add` 404 on `@aws-sdk/credential-provider-http` persists, vendor pi's `dist/bundle` into the package instead); runs pi sign-in through the helper binary against `~/.freedia/pi-agent`; installs the extension (see Updates); `freedia uninstall`; `freedia doctor`.
-  - Tests: framing round-trip; allowlist rejects `bash` and unknown commands; routing two chats concurrently without cross-talk; queue when over the limit; process exits after a run and the next message respawns and resumes (with a fake pi binary emitting recorded S1 fixtures); installer writes the manifest to Chrome's folder, creating it when missing (temp HOME).
+  - Installer `freedia install`: copies the binary to `~/.freedia/bin/freedia-helper`; writes **one** native host manifest at `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.freedia.helper.json` (creating the folder if Chrome isn't installed) with the absolute binary path and every freeDia extension ID in `allowed_origins`. Dia reads native host manifests only from Chrome's folder, never from its own user-data dir (observed in Dia 1.52.0, `notes/research-dia-detection.md`), so this one file serves both browsers. Installs pi 1.3.0 into `~/.freedia/pi` with `bun add` (pinned as a dependency of the `freedia` package); runs pi sign-in through the helper binary against `~/.freedia/pi-agent`; installs the extension (see Updates); `freedia uninstall`; `freedia doctor`.
+  - Tests (fake pi replaying the S1 fixtures in `packages/helper/test/fixtures/pi/`): framing round-trip; allowlist rejects `bash`, every other blocked command and unknown types; launch flags and clean environment (no `*_API_KEY` reaches pi); **a resumed spawn never passes `--model`**; routing two chats concurrently without cross-talk; queue when over the limit; process exits on `agent_settled` and the next message respawns and resumes; abort ordering (`agent_settled` → `abort` response → stdin closed); `chat.delete` stops a running chat first; installer writes the manifest to Chrome's folder, creating it when missing (temp HOME).
 - [ ] **1B Extension shell** (`packages/extension`, no chat UI)
-  - Manifest: `nativeMessaging`, `storage`, `scripting`, `activeTab`; command `open-chat` (`Ctrl+Shift+E` / mac `Command+Shift+E`) as a backup that always works, rebindable at `chrome://extensions/shortcuts`.
+  - Manifest: `nativeMessaging`, `storage`, `scripting`, `activeTab`; command `open-chat` (`Ctrl+Shift+E` / mac `Command+Shift+E`) as a backup that always works, rebindable at `chrome://extensions/shortcuts`. The service worker forwards `open-chat` to the tab with `tabs.sendMessage`; the content script still has user activation there (S2), which PiP needs.
   - Content script (tiny, all http/https pages): selection capture, the user's chosen shortcut (default **⌘E**; capture-phase `keydown` on `window` at `document_start`, matched on `event.code`, `preventDefault` + `stopImmediatePropagation`), lazy-load the chat UI into a shadow-DOM root on first open.
   - Page context (see Page text): Readability → markdown with `innerText` fallback, fingerprint, excerpt sized to 10% of the model's context window and centered on highlights, `page.put`/`page.clear`, re-send rules (fingerprint change, 30-min quiet, reconnect); URL + title; builds the `prompt` message text.
   - Service worker: native port lifecycle and reconnect, `helper.hello` with the concurrency setting, relay between tab ports and the helper by `chatId`, `helper_missing` detection, new `chatId` generation, tab → chatId map in `chrome.storage.local`.
   - Onboarding + settings: **no browser detection and no "Using Dia?" question.** First run shows a shortcut picker, default **⌘E**: keep it or press another combination. Changeable later in settings. Onboarding notes that Dia uses ⌘E for its own chat ("turn it off in Dia → Settings → Shortcuts, or pick another shortcut here") and that ⇧⌘E always works too. Settings also hold max concurrent chats.
   - Typed client API for the UI: `send()`, `abort()`, `newChat()`, `addQuote()`, `setModel()`, `listChats()`, `openChat(chatId)`, `deleteChat()`, event subscription.
   - Tests: extraction + fallback, excerpt layout (no highlight, one, several, overlapping, not found, page under budget), re-send rules, prompt text built correctly (first message vs follow-up), chosen shortcut opens the chat and the default is ⌘E, relay routing per tab.
+  - Delete `e2e/spike/` once this task is done; its useful checks move into `e2e/specs` with real assertions in 2.3.
 - [ ] **1C Chat UI** (`packages/extension/src/ui`, built against a mock client implementing 1B's API)
   - Dia-style floating chat window (strings from `notes/research-dia-ui.md`): header ("+" new chat, history, expand, close; no chat title, no model picker), message list with streaming markdown (react-markdown + code highlighting), composer, stop button.
   - Composer: **model picker in the composer toolbar beside Send**, as in Dia; placeholder "Ask a question about this page", then "Ask another question". Send is disabled while a reply is running (pi rejects a second `prompt` mid-run).
@@ -202,14 +215,15 @@ Spike outcomes may amend the contract before Bucket 1 starts.
   - **Closing mid-reply cancels it.** Closing the chat window while a reply streams shows Dia's confirm, "Cancel this response?"; confirming sends `abort` and closes. The reply never finishes in the background. Tab closed or navigated away mid-reply: the service worker sends `abort` (no confirm possible). The partial reply stays in the history with `stopReason: "aborted"`.
   - Drag, resize, expand; position/size persisted (`chrome.storage.local`).
   - History panel: list with titles, reopen, delete (with a "Delete this chat?" confirm, as in Dia).
-  - Error states with fix text for every `helper.error` code and for pi's own error events (provider rejected, rate limited, not signed in); "Install helper" card with a copyable command.
-  - Tests: "Selected Text" chip add, new chat resets, model switch updates selection, send disabled mid-reply, "Thinking…" before the first delta, copy (code and message), close mid-reply → confirm → `abort`, stop, queued state, error rendering.
+  - Error states with fix text for every `helper.error` code and for pi's own errors: not signed in (failed `prompt` response, `No API key found for …`), provider rejected and rate limited (`message_end` with `stopReason: "error"`; show "retrying" during `auto_retry_start` / `auto_retry_end`). "Install helper" card with a copyable command.
+  - Rendering pi's events: ignore `role: "system"` messages (events and `get_messages`); build streaming text from `message_update.assistantMessageEvent` deltas keyed by `contentIndex`, then replace it with `message_end.message`. A reply with `stopReason: "aborted"` renders as stopped.
+  - Tests: "Selected Text" chip add, new chat resets, model switch updates selection, send disabled mid-reply, "Thinking…" before the first delta, copy (code and message), close mid-reply → confirm → `abort`, stop, queued state, error rendering (each pi error shape above), streaming deltas replaced by `message_end`.
 
 ### Bucket 2 — after Bucket 1
 
 - [ ] **2.1 Integration wiring**: UI uses the real 1B client; end-to-end through helper + pi.
-- [ ] **2.2 PiP float mode (stretch)**: only if S2 says go. "Float" moves the chat UI into a Document PiP window; same chat continues.
-- [ ] **2.3 E2E** (Playwright Chromium, unpacked extension, real helper, pi faux provider): ENSURE 1–8, 10–12, 14. ENSURE 13 manual in Dia; ENSURE 9 depends on S2.
+- [ ] **2.2 PiP float mode (stretch, GO in Chromium; Dia check D pending)**: "Float" opens a Document PiP window only inside a user-gesture handler (button click, ⌘E keydown, or the `open-chat` message) and moves the existing shadow-DOM chat host into it; no new UI instance or port. On PiP `pagehide`, move the host back to the page. Limits (S2): one PiP window across the browser (opening one from another tab closes the first), and it closes when its tab navigates.
+- [ ] **2.3 E2E** (Playwright Chromium, unpacked extension, real helper, pi faux provider via `FREEDIA_PI_EXTRA_ARGS`): ENSURE 1–8, 10–12, 14. Playwright can't press browser-level shortcuts, so ⇧⌘E is tested as registration (`chrome.commands.getAll()`) plus the content-side handler via a service-worker message; ⌘E is tested with `page.keyboard.press("Meta+e")`. ENSURE 13 manual in Dia; ENSURE 9 automatable (button click → `context.waitForEvent("page")`).
 - [ ] **2.4 Docs**: README (install, sign-in, shortcuts, privacy), CHANGELOG.
 
 ## ENSURE → validation
@@ -224,7 +238,7 @@ Spike outcomes may amend the contract before Bucket 1 starts.
 | 6 | Re-highlight adds quote | E2E |
 | 7 | History survives restart | E2E: relaunch browser; list/reopen/delete; session files in temp `~/.freedia/chats` |
 | 8 | Drag/resize/expand persisted | E2E: drag, reload, assert position |
-| 9 | (Stretch) PiP float | S2 result; E2E if automatable, else manual |
+| 9 | (Stretch) PiP float | E2E in Chromium (S2 showed it's automatable: button click → `context.waitForEvent("page")`); manual in Dia (check D) |
 | 10 | Actionable errors | Helper unit tests per `helper.error` code; UI tests mapping pi error events to fix text; E2E for `helper_missing` |
 | 11 | Read-only agent; previous chats only on ask | S1 verification + helper test that `bash` is blocked and launch flags are set |
 | 12 | Chat per tab | E2E: two tabs, separate chats |
@@ -233,15 +247,16 @@ Spike outcomes may amend the contract before Bucket 1 starts.
 
 ## Risks
 
-- **pi RPC details** (event shapes, abort partials, session naming) → S1 first.
+- **pi RPC details** → settled by S1 (Contract): event shapes, `agent_settled`, abort partials, session naming, error shapes.
 - **pi's protocol is the extension's protocol** → a pi release could change events. pi is pinned per helper release; the helper self-updates, and a version check in `helper.hello` catches skew.
 - **⌘E clashes in both browsers.** Dia: ⌘E opens Dia's own chat and may win over the content script (manual check B); onboarding tells the user to turn Dia's off or pick another shortcut. Chrome: ⌘E is "Use Selection for Find"; whether the content script's `preventDefault` stops it is unverified, so check in 1B. Either way ⇧⌘E still works.
 - **Shortcut needs a content script**, so it doesn't work on pages where content scripts can't run (`chrome://`, the Web Store, the PDF viewer). freeDia can't read those pages anyway (Page text step 8).
-- **PiP from extension** may not work → stretch only.
+- **PiP from extension** → GO in Chromium (S2); Dia check D pending. Stays a stretch goal.
 - **Native messaging on macOS**: Chrome launches the host with a minimal PATH → manifest points to the absolute binary path; pi path resolved at install time.
 - **Helper lifetime**: Chrome closes the helper's stdin when the service worker's port drops → in-flight replies could be cut. Service worker keeps the port open while any chat is running; helper finishes in-flight runs before exiting.
-- **pi under Bun is off pi's documented path** (`engines.node >=22.19`) → S1 verifies; Node fallback kept.
-- **Memory** (~91 MB per pi process) → only while generating; max 3 at once.
+- **pi under Bun is off pi's documented path** (`engines.node >=22.19`) → S1 found no incompatibility (plain and compiled); a pi upgrade must re-run the S1 recorder before shipping.
+- **Memory** (~105–140 MB per pi process) → only while generating; max 3 at once.
+- **Provider keys in the environment** → pi would pick up the user's shell keys; the helper starts pi with a clean environment (Contract).
 - **Model picker needs a pi process** for `get_available_models` when no chat is running → helper spawns a short-lived one and caches the list for the session.
 - **Compiled binary size** (~60 MB per platform) → acceptable for a one-time install.
 - **Provider terms** (Anthropic subscription via pi-ai in a Store extension): accepted by user; not a build blocker.
