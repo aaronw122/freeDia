@@ -8,9 +8,9 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import type { PiRpcRecord } from "../../../src/protocol";
 
-type Json = Record<string, unknown>;
-type PiRecord = { type: string; id?: string; [key: string]: unknown };
+type JsonObject = Record<string, unknown>;
 type Line = {
 	t: number;
 	dir: "stdin" | "stdout" | "stderr" | "exit";
@@ -36,14 +36,58 @@ const agentDir =
 const sessionDir = mkdtempSync(join(tmpdir(), "freedia-s1-"));
 const tmpRoot = tmpdir().replace(/\/$/, "");
 const fixturesDir = resolve(import.meta.dir);
-const results: Json = {
+const results: JsonObject = {
 	runtime: process.execPath,
 	bun: Bun.version,
 	piCli,
 	sessionDir,
 };
 
-function isPiRecord(value: unknown): value is PiRecord {
+async function main(): Promise<void> {
+	if (outDir) mkdirSync(outDir, { recursive: true });
+	const only = args.filter((arg) => !arg.startsWith("--"));
+	try {
+		for (const [name, run] of Object.entries(scenarios)) {
+			if (only.length && !only.includes(name)) continue;
+			const started = performance.now();
+			try {
+				await run();
+				results[`${name}Ms`] = Math.round(performance.now() - started);
+			} catch (error) {
+				results[`${name}Error`] = String(error);
+			}
+		}
+		results.sessionFiles = readdirSync(sessionDir, { recursive: true });
+		results.fixturesWritten =
+			outDir ?? "none (pass --write-fixtures or FREEDIA_FIXTURE_DIR)";
+		console.log(JSON.stringify(results, null, 2));
+	} finally {
+		rmSync(sessionDir, { recursive: true, force: true });
+	}
+}
+
+const scenarios: Record<string, () => Promise<void>> = {
+	sessionName,
+	crossCwdResume,
+	streamAndState,
+	toolsReadOnly,
+	bashCommand,
+	abortMidReply,
+	setModelMidSession,
+	modelOverrideOnResume,
+	sessionIdLength,
+	resumeAfterExit,
+	rateLimit,
+	rateLimitAbort,
+	providerRejected,
+	busyPrompt,
+	notSignedIn,
+	sessionIds,
+	emptyRespawn,
+	longSessionRespawn,
+};
+
+function isPiRecord(value: unknown): value is PiRpcRecord {
 	return (
 		typeof value === "object" &&
 		value !== null &&
@@ -57,8 +101,8 @@ class Pi {
 	readonly started = performance.now();
 	readonly proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
 	private waiters: {
-		match: (r: PiRecord) => boolean;
-		resolve: (r: PiRecord) => void;
+		match: (r: PiRpcRecord) => boolean;
+		resolve: (r: PiRpcRecord) => void;
 	}[] = [];
 	readonly exited: Promise<number>;
 
@@ -109,35 +153,42 @@ class Pi {
 				const raw = buffer.slice(0, index).replace(/\r$/, "");
 				buffer = buffer.slice(index + 1);
 				index = buffer.indexOf("\n");
-				if (dir === "stderr") {
-					this.lines.push({ t: this.now(), dir, record: raw });
-					continue;
-				}
-				const record: unknown = JSON.parse(raw);
-				this.lines.push({ t: this.now(), dir, record });
-				if (!isPiRecord(record)) continue;
-				for (const waiter of [...this.waiters]) {
-					if (waiter.match(record)) {
-						this.waiters.splice(this.waiters.indexOf(waiter), 1);
-						waiter.resolve(record);
-					}
-				}
+				this.handleLine(raw, dir);
 			}
 		}
 		if (buffer && dir === "stderr")
 			this.lines.push({ t: this.now(), dir, record: buffer });
 	}
 
-	send(command: Json): void {
+	private handleLine(raw: string, dir: "stdout" | "stderr"): void {
+		if (dir === "stderr") {
+			this.lines.push({ t: this.now(), dir, record: raw });
+			return;
+		}
+		const record: unknown = JSON.parse(raw);
+		this.lines.push({ t: this.now(), dir, record });
+		if (isPiRecord(record)) this.dispatch(record);
+	}
+
+	private dispatch(record: PiRpcRecord): void {
+		for (const waiter of [...this.waiters]) {
+			if (waiter.match(record)) {
+				this.waiters.splice(this.waiters.indexOf(waiter), 1);
+				waiter.resolve(record);
+			}
+		}
+	}
+
+	send(command: JsonObject): void {
 		this.lines.push({ t: this.now(), dir: "stdin", record: command });
 		this.proc.stdin.write(`${JSON.stringify(command)}\n`);
 		this.proc.stdin.flush();
 	}
 
 	waitFor(
-		match: (r: PiRecord) => boolean,
+		match: (r: PiRpcRecord) => boolean,
 		timeoutMs = 20_000,
-	): Promise<PiRecord> {
+	): Promise<PiRpcRecord> {
 		for (const line of this.lines) {
 			if (
 				line.dir === "stdout" &&
@@ -147,7 +198,7 @@ class Pi {
 				return Promise.resolve(line.record);
 			}
 		}
-		const { promise, resolve, reject } = Promise.withResolvers<PiRecord>();
+		const { promise, resolve, reject } = Promise.withResolvers<PiRpcRecord>();
 		const timer = setTimeout(
 			() => reject(new Error(`timeout waiting in ${this.proc.pid}`)),
 			timeoutMs,
@@ -162,14 +213,14 @@ class Pi {
 		return promise;
 	}
 
-	async request(command: Json): Promise<PiRecord> {
+	async request(command: JsonObject): Promise<PiRpcRecord> {
 		const id = String(command.id);
 		const pending = this.waitFor((r) => r.type === "response" && r.id === id);
 		this.send(command);
 		return pending;
 	}
 
-	settled(after = 0): Promise<PiRecord> {
+	settled(after = 0): Promise<PiRpcRecord> {
 		let seen = 0;
 		return this.waitFor(
 			(r) => r.type === "agent_settled" && ++seen > after,
@@ -348,9 +399,26 @@ async function setModelMidSession(): Promise<void> {
 	pi.save("set-model");
 }
 
-async function modelOverrideOnResume(): Promise<void> {
-	const id = "c-model-2";
-	const resumeArgs = [
+function modelOf(state: PiRpcRecord): string | undefined {
+	return JSON.stringify(state.data).match(/"model":\{"id":"([^"]+)"/)?.[1];
+}
+
+function sessionFilePath(id: string): string {
+	return join(
+		sessionDir,
+		readdirSync(sessionDir).find((f) => f.endsWith(`_${id}.jsonl`)) ?? "",
+	);
+}
+
+async function sessionModelChanges(id: string): Promise<unknown[]> {
+	return (await Bun.file(sessionFilePath(id)).text())
+		.split("\n")
+		.filter((line) => line.includes('"type":"model_change"'))
+		.map((line) => JSON.parse(line).modelId);
+}
+
+function resumeWithoutModelArgs(id: string): string[] {
+	return [
 		"--session-dir",
 		sessionDir,
 		"--session-id",
@@ -361,16 +429,9 @@ async function modelOverrideOnResume(): Promise<void> {
 		"--offline",
 		...readOnly,
 	];
-	const sessionFile = () =>
-		join(
-			sessionDir,
-			readdirSync(sessionDir).find((f) => f.endsWith(`_${id}.jsonl`)) ?? "",
-		);
-	const modelChanges = async () =>
-		(await Bun.file(sessionFile()).text())
-			.split("\n")
-			.filter((line) => line.includes('"type":"model_change"'))
-			.map((line) => JSON.parse(line).modelId);
+}
+
+async function setModelPhase(id: string) {
 	const first = new Pi(chat(id));
 	const s1 = first.settled();
 	await first.request({ id: "r1", type: "prompt", message: "first on faux-1" });
@@ -381,25 +442,31 @@ async function modelOverrideOnResume(): Promise<void> {
 		provider: "faux",
 		modelId: "faux-2",
 	});
-	const modelOf = (state: PiRecord) =>
-		JSON.stringify(state.data).match(/"model":\{"id":"([^"]+)"/)?.[1];
 	const stateAfterSet = modelOf(
 		await first.request({ id: "r3", type: "get_state" }),
 	);
 	await first.close();
 	first.save("model-override-1-set-model");
-	const afterSet = await modelChanges();
+	const afterSet = await sessionModelChanges(id);
+	return { stateAfterSet, afterSet };
+}
+
+async function resumeWithoutPromptPhase(id: string) {
 	const withFlag = new Pi(chat(id));
 	const stateWithFlag = modelOf(
 		await withFlag.request({ id: "r1", type: "get_state" }),
 	);
 	await withFlag.close();
-	const afterFlagNoPrompt = await modelChanges();
-	const probe = new Pi(resumeArgs);
+	const afterFlagNoPrompt = await sessionModelChanges(id);
+	const probe = new Pi(resumeWithoutModelArgs(id));
 	const stateNoFlagAfterFlagNoPrompt = modelOf(
 		await probe.request({ id: "r1", type: "get_state" }),
 	);
 	await probe.close();
+	return { stateWithFlag, afterFlagNoPrompt, stateNoFlagAfterFlagNoPrompt };
+}
+
+async function resumeWithPromptPhase(id: string) {
 	const withFlagPrompt = new Pi(chat(id));
 	await withFlagPrompt.request({ id: "r1", type: "get_state" });
 	const s2 = withFlagPrompt.settled();
@@ -411,8 +478,8 @@ async function modelOverrideOnResume(): Promise<void> {
 	await s2;
 	await withFlagPrompt.close();
 	withFlagPrompt.save("model-override-2-resume-with-model-flag");
-	const afterFlagPrompt = await modelChanges();
-	const withoutFlag = new Pi(resumeArgs);
+	const afterFlagPrompt = await sessionModelChanges(id);
+	const withoutFlag = new Pi(resumeWithoutModelArgs(id));
 	const stateWithoutFlag = modelOf(
 		await withoutFlag.request({ id: "r1", type: "get_state" }),
 	);
@@ -425,20 +492,29 @@ async function modelOverrideOnResume(): Promise<void> {
 	await s3;
 	await withoutFlag.close();
 	withoutFlag.save("model-override-3-resume-without-flag");
+	const afterNoFlag = await sessionModelChanges(id);
+	return { afterFlagPrompt, stateWithoutFlag, afterNoFlag };
+}
+
+async function modelOverrideOnResume(): Promise<void> {
+	const id = "c-model-2";
+	const set = await setModelPhase(id);
+	const withoutPrompt = await resumeWithoutPromptPhase(id);
+	const withPrompt = await resumeWithPromptPhase(id);
 	results.modelOverride = {
-		stateAfterSet,
-		stateNoFlagAfterFlagNoPrompt,
-		afterSet,
-		stateWithFlag,
-		afterFlagNoPrompt,
-		afterFlagPrompt,
-		stateWithoutFlag,
-		afterNoFlag: await modelChanges(),
+		stateAfterSet: set.stateAfterSet,
+		stateNoFlagAfterFlagNoPrompt: withoutPrompt.stateNoFlagAfterFlagNoPrompt,
+		afterSet: set.afterSet,
+		stateWithFlag: withoutPrompt.stateWithFlag,
+		afterFlagNoPrompt: withoutPrompt.afterFlagNoPrompt,
+		afterFlagPrompt: withPrompt.afterFlagPrompt,
+		stateWithoutFlag: withPrompt.stateWithoutFlag,
+		afterNoFlag: withPrompt.afterNoFlag,
 	};
 }
 
 async function sessionIdLength(): Promise<void> {
-	const outcome: Json = {};
+	const outcome: JsonObject = {};
 	for (const length of [64, 224, 225, 300]) {
 		const id = `c${"a".repeat(length - 1)}`;
 		const pi = new Pi(chat(id));
@@ -628,7 +704,7 @@ async function sessionIds(): Promise<void> {
 		"a/b",
 		"ü-unicode",
 	];
-	const outcome: Json = {};
+	const outcome: JsonObject = {};
 	for (const id of candidates) {
 		const pi = new Pi([
 			"--session-dir",
@@ -676,7 +752,7 @@ async function longSessionRespawn(): Promise<void> {
 	const size = files.length
 		? Bun.file(join(sessionDir, files[0] ?? "")).size
 		: 0;
-	const timings: Json[] = [];
+	const timings: JsonObject[] = [];
 	for (let run = 0; run < 3; run++) {
 		const resumed = new Pi(chat(id));
 		await resumed.request({ id: "r1", type: "get_state" });
@@ -741,44 +817,4 @@ async function crossCwdResume(): Promise<void> {
 	results.crossCwdFiles = readdirSync(sessionDir).filter((f) => f.includes(id));
 }
 
-const scenarios: Record<string, () => Promise<void>> = {
-	sessionName,
-	crossCwdResume,
-	streamAndState,
-	toolsReadOnly,
-	bashCommand,
-	abortMidReply,
-	setModelMidSession,
-	modelOverrideOnResume,
-	sessionIdLength,
-	resumeAfterExit,
-	rateLimit,
-	rateLimitAbort,
-	providerRejected,
-	busyPrompt,
-	notSignedIn,
-	sessionIds,
-	emptyRespawn,
-	longSessionRespawn,
-};
-
-if (outDir) mkdirSync(outDir, { recursive: true });
-const only = args.filter((arg) => !arg.startsWith("--"));
-try {
-	for (const [name, run] of Object.entries(scenarios)) {
-		if (only.length && !only.includes(name)) continue;
-		const started = performance.now();
-		try {
-			await run();
-			results[`${name}Ms`] = Math.round(performance.now() - started);
-		} catch (error) {
-			results[`${name}Error`] = String(error);
-		}
-	}
-	results.sessionFiles = readdirSync(sessionDir, { recursive: true });
-	results.fixturesWritten =
-		outDir ?? "none (pass --write-fixtures or FREEDIA_FIXTURE_DIR)";
-	console.log(JSON.stringify(results, null, 2));
-} finally {
-	rmSync(sessionDir, { recursive: true, force: true });
-}
+await main();
