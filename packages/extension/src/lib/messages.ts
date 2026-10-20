@@ -20,4 +20,5 @@ export type TabToWorker =
 
 export type WorkerToTab =
 	| TabState
+	| { type: "tab.rejected"; id: string; reason: string }
 	| { type: "helper"; message: HelperToExtension };

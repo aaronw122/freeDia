@@ -254,6 +254,64 @@ function snapSpans(text: string, spans: Span[], highlights: Span[]): Span[] {
 	});
 }
 
+function wordCutForward(text: string, from: number, to: number): number {
+	if (to >= text.length) {
+		return text.length;
+	}
+	for (let i = to; i > from; i--) {
+		if (/\s/.test(text[i] ?? "")) {
+			return i;
+		}
+	}
+	return from;
+}
+
+function wordCutBackward(text: string, from: number, to: number): number {
+	if (to <= 0) {
+		return 0;
+	}
+	for (let i = to; i < from; i++) {
+		if (/\s/.test(text[i - 1] ?? "")) {
+			return i;
+		}
+	}
+	return from;
+}
+
+function fill(text: string, spans: Span[], target: number): Span[] {
+	const filled = spans.map((span) => ({ ...span }));
+	let slack = target - covered(filled);
+	for (let i = 0; i < filled.length && slack > 0; i++) {
+		const span = filled[i];
+		if (span === undefined) {
+			continue;
+		}
+		const limit = filled[i + 1]?.start ?? text.length;
+		const end = wordCutForward(
+			text,
+			span.end,
+			Math.min(limit, span.end + slack),
+		);
+		slack -= end - span.end;
+		span.end = end;
+	}
+	for (let i = filled.length - 1; i >= 0 && slack > 0; i--) {
+		const span = filled[i];
+		if (span === undefined) {
+			continue;
+		}
+		const limit = filled[i - 1]?.end ?? 0;
+		const start = wordCutBackward(
+			text,
+			span.start,
+			Math.max(limit, span.start - slack),
+		);
+		slack -= span.start - start;
+		span.start = start;
+	}
+	return mergeSpans(filled);
+}
+
 function render(text: string, spans: Span[]): string {
 	const parts: string[] = [];
 	let cursor = 0;
@@ -296,10 +354,13 @@ export function layoutExcerpt(
 				end: markdown.length,
 			},
 		];
-		return render(markdown, spans);
+		return render(markdown, fill(markdown, spans, budget));
 	}
 	const spans = planSpans(markdown.length, budget, highlights, true);
-	return render(markdown, snapSpans(markdown, spans, highlights));
+	return render(
+		markdown,
+		fill(markdown, snapSpans(markdown, spans, highlights), budget),
+	);
 }
 
 export function highlightWindow(
@@ -315,7 +376,14 @@ export function highlightWindow(
 		return null;
 	}
 	const spans = planSpans(markdown.length, budget, highlights, false);
-	return render(markdown, snapSpans(markdown, spans, highlights));
+	return render(
+		markdown,
+		fill(
+			markdown,
+			snapSpans(markdown, spans, highlights),
+			Math.floor(budget * WINDOW_SHARE),
+		),
+	);
 }
 
 export function capQuotes(quotes: string[], budget: number): string[] {

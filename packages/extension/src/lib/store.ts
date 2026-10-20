@@ -106,16 +106,6 @@ export async function savePageRecord(
 	await store.set(PAGE_KEY_PREFIX + chatId, record);
 }
 
-export async function forgetPageFile(
-	store: KeyValueStore,
-	chatId: string,
-): Promise<void> {
-	const record = await loadPageRecord(store, chatId);
-	if (record !== null) {
-		await savePageRecord(store, chatId, { ...record, fileKey: "" });
-	}
-}
-
 export async function removePageRecord(
 	store: KeyValueStore,
 	chatId: string,

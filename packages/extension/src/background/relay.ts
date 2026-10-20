@@ -61,6 +61,7 @@ export class Relay {
 	private readonly tabs = new Set<TabEntry>();
 	private readonly requests = new Map<string, TabEntry>();
 	private readonly running = new Set<string>();
+	private readonly pendingPrompts = new Map<string, string>();
 	private readonly chunks = new ChunkAssembler();
 	private readonly connectionErrors: HelperToExtension[] = [];
 	private readonly tabChats: Promise<Record<string, string>>;
@@ -88,6 +89,19 @@ export class Relay {
 		delete map[String(tabId)];
 		await saveTabChats(this.deps.store, map);
 		await this.releaseChat(chatId);
+	}
+
+	async browserStarted(): Promise<void> {
+		const map = await this.tabChats;
+		const attached = new Set(
+			[...this.tabs].map((tab) => String(tab.port.tabId)),
+		);
+		for (const tabId of Object.keys(map)) {
+			if (!attached.has(tabId)) {
+				delete map[tabId];
+			}
+		}
+		await saveTabChats(this.deps.store, map);
 	}
 
 	async settingsChanged(): Promise<void> {
@@ -163,7 +177,8 @@ export class Relay {
 	}
 
 	private abortIfRunning(chatId: string): void {
-		if (!this.running.has(chatId)) {
+		const pending = [...this.pendingPrompts.values()].includes(chatId);
+		if (!this.running.has(chatId) && !pending) {
 			return;
 		}
 		this.send({ chatId, rpc: { type: "abort", id: this.deps.randomUUID() } });
@@ -190,18 +205,40 @@ export class Relay {
 			if (!isForwardedRpc(message.rpc)) {
 				return;
 			}
-			if (typeof message.rpc.id === "string") {
-				this.requests.set(message.rpc.id, entry);
+			const id = typeof message.rpc.id === "string" ? message.rpc.id : null;
+			if (message.chatId !== entry.chatId) {
+				this.reject(entry, id, message.chatId);
+				return;
 			}
-			if (message.rpc.type === "prompt") {
-				this.running.add(message.chatId);
+			if (id !== null) {
+				this.requests.set(id, entry);
+			}
+			if (message.rpc.type === "prompt" && id !== null) {
+				this.pendingPrompts.set(id, message.chatId);
 			}
 			this.send({ chatId: message.chatId, rpc: message.rpc });
 			return;
 		}
-		if (isHelperCommand(message) && message.type !== "helper.hello") {
-			this.requests.set(message.id, entry);
-			this.send(message);
+		if (!isHelperCommand(message) || message.type === "helper.hello") {
+			return;
+		}
+		const ownChatOnly =
+			message.type === "page.put" || message.type === "page.clear";
+		if (ownChatOnly && message.chatId !== entry.chatId) {
+			this.reject(entry, message.id, message.chatId);
+			return;
+		}
+		this.requests.set(message.id, entry);
+		this.send(message);
+	}
+
+	private reject(entry: TabEntry, id: string | null, chatId: string): void {
+		if (id !== null) {
+			entry.port.postMessage({
+				type: "tab.rejected",
+				id,
+				reason: `This tab is not showing chat ${chatId}.`,
+			});
 		}
 	}
 
@@ -284,6 +321,7 @@ export class Relay {
 		this.chunks.clear();
 		this.requests.clear();
 		this.running.clear();
+		this.pendingPrompts.clear();
 		this.failures = wasReady ? 1 : this.failures + 1;
 		const missing =
 			!wasReady &&
@@ -316,6 +354,7 @@ export class Relay {
 		if (
 			this.tabs.size > 0 ||
 			this.running.size > 0 ||
+			this.pendingPrompts.size > 0 ||
 			this.outbox.length > 0 ||
 			this.native === null
 		) {
@@ -349,8 +388,11 @@ export class Relay {
 		}
 		const owner = this.takeOwner("id" in message ? message.id : undefined);
 		const chatId = "chatId" in message ? message.chatId : undefined;
-		if (message.type === "helper.error" && chatId !== undefined) {
-			this.running.delete(chatId);
+		if (message.type === "helper.error" && message.id !== undefined) {
+			this.pendingPrompts.delete(message.id);
+		}
+		if (message.type === "chat.status" && chatId !== undefined) {
+			this.running.add(chatId);
 		}
 		if (chatId !== undefined) {
 			this.deliver(message, chatId, owner);
@@ -378,12 +420,21 @@ export class Relay {
 	}
 
 	private trackRun(chatId: string, rpc: Record<string, unknown>): void {
-		const failedPrompt =
+		const id = typeof rpc.id === "string" ? rpc.id : null;
+		if (rpc.type === "response" && rpc.command === "prompt" && id !== null) {
+			const pending = this.pendingPrompts.get(id);
+			this.pendingPrompts.delete(id);
+			if (pending !== undefined && rpc.success === true) {
+				this.running.add(chatId);
+			}
+			this.closeIfIdle();
+			return;
+		}
+		const aborted =
 			rpc.type === "response" &&
-			rpc.command === "prompt" &&
-			rpc.success === false;
-		const aborted = rpc.type === "response" && rpc.command === "abort";
-		if (rpc.type === "agent_settled" || failedPrompt || aborted) {
+			rpc.command === "abort" &&
+			rpc.success === true;
+		if (rpc.type === "agent_settled" || aborted) {
 			this.running.delete(chatId);
 			this.closeIfIdle();
 		}

@@ -25,6 +25,8 @@ class FakeWorker implements WorkerPort {
 		},
 	];
 	private listeners: ((message: WorkerToTab) => void)[] = [];
+	private readonly prompted = Promise.withResolvers<void>();
+	readonly whenPrompted = this.prompted.promise;
 	onPrompt: (rpc: Rpc) => void = (rpc) => this.reply(rpc, true);
 
 	postMessage(message: TabToWorker) {
@@ -91,6 +93,7 @@ class FakeWorker implements WorkerPort {
 					});
 					return;
 				case "prompt":
+					this.prompted.resolve();
 					this.onPrompt(rpc);
 					return;
 				default:
@@ -389,5 +392,39 @@ describe("chat client commands", () => {
 			state: "helper_missing",
 		});
 		await expect(client.listChats()).rejects.toThrow("not installed");
+	});
+
+	test("requests in flight when the helper turns out missing are rejected, not left hanging", async () => {
+		const { client, worker } = setup();
+		await client.listModels();
+		worker.onPrompt = () => {};
+		const sendResult = client.send("Q").then(
+			() => "resolved",
+			(error: Error) => error.message,
+		);
+		await worker.whenPrompted;
+		worker.push({
+			type: "tab.state",
+			chatId: CHAT_A,
+			connection: "helper_missing",
+			connectionId: worker.connectionId,
+		});
+		expect(await sendResult).toBe("The freeDia helper is not installed.");
+	});
+
+	test("openChat on the current chat resolves without waiting for a chat change", async () => {
+		const { client, worker } = setup();
+		await client.listModels();
+		const messages: unknown = await client.openChat(CHAT_A);
+		expect(messages).toEqual([{ role: "user", content: "hi" }]);
+		expect(worker.sent.some((m) => m.type === "tab.openChat")).toBe(false);
+	});
+
+	test("a request the worker rejects fails with the worker's reason", async () => {
+		const { client, worker } = setup();
+		await client.listModels();
+		worker.onPrompt = (rpc) =>
+			worker.push({ type: "tab.rejected", id: rpc.id, reason: "not yours" });
+		await expect(client.send("Q")).rejects.toThrow("not yours");
 	});
 });

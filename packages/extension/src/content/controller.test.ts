@@ -51,12 +51,15 @@ function setup() {
 	};
 }
 
-function press(init: KeyboardEventInit): KeyboardEvent {
+function press(init: KeyboardEventInit, trusted = true): KeyboardEvent {
 	const event = new KeyboardEvent("keydown", {
 		bubbles: true,
 		cancelable: true,
 		...init,
 	});
+	if (trusted) {
+		Object.defineProperty(event, "isTrusted", { value: true });
+	}
 	document.body.dispatchEvent(event);
 	return event;
 }
@@ -96,8 +99,18 @@ describe("shortcut", () => {
 		expect(loadUi).toHaveBeenCalledTimes(1);
 		expect(mountChat).toHaveBeenCalledTimes(1);
 		const host = document.documentElement.querySelector(HOST_TAG);
-		expect(host?.shadowRoot).not.toBeNull();
-		expect(root).toBe(host?.shadowRoot as ShadowRoot);
+		expect(host).not.toBeNull();
+		expect(host?.shadowRoot).toBeNull();
+		expect(root.host).toBe(host as Element);
+	});
+
+	test("a page-dispatched synthetic keydown does not open the chat", async () => {
+		const { loadUi, pageListener } = setup();
+		const event = press({ key: "e", code: "KeyE", metaKey: true }, false);
+		expect(event.defaultPrevented).toBe(false);
+		expect(pageListener).toHaveBeenCalledTimes(1);
+		expect(loadUi).not.toHaveBeenCalled();
+		expect(document.documentElement.querySelector(HOST_TAG)).toBeNull();
 	});
 
 	test("matches on event.code, so layouts and Shift case don't matter", () => {
@@ -137,14 +150,14 @@ describe("shortcut", () => {
 
 describe("opening", () => {
 	test("the selection becomes a quote and the UI mounts once; later opens add quotes and re-show", async () => {
-		const { controller, mountChat, loadUi, quotes } = setup();
+		const { controller, mountChat, loadUi, quotes, mounted } = setup();
 		select("first highlight");
 		await settle(controller);
 		expect(quotes).toEqual(["first highlight"]);
 
-		const root = document.documentElement.querySelector(HOST_TAG)?.shadowRoot;
+		const root = await mounted;
 		const reopened = mock(() => {});
-		root?.addEventListener(OPEN_EVENT, reopened);
+		root.addEventListener(OPEN_EVENT, reopened);
 
 		select("second highlight");
 		await settle(controller);

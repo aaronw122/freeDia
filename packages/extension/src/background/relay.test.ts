@@ -293,6 +293,10 @@ describe("relay", () => {
 				rpc: { type: "prompt", id: "b1", message: "yo" },
 			},
 		});
+		native().emit({
+			chatId: CHAT_B,
+			rpc: { id: "b1", type: "response", command: "prompt", success: true },
+		});
 		tabA.close();
 		const aborts = native().sent.filter(
 			(m) => "rpc" in m && m.rpc.type === "abort",
@@ -302,6 +306,13 @@ describe("relay", () => {
 		]);
 		expect(native().disconnected).toBe(false);
 	});
+
+	function accepted(native: FakeNative, chatId: string, id: string) {
+		native.emit({
+			chatId,
+			rpc: { id, type: "response", command: "prompt", success: true },
+		});
+	}
 
 	test("a finished chat is not aborted when its tab closes", async () => {
 		const { relay, native } = setup();
@@ -314,9 +325,65 @@ describe("relay", () => {
 				rpc: { type: "prompt", id: "a1", message: "hi" },
 			},
 		});
+		accepted(native(), CHAT_A, "a1");
 		native().emit({
 			chatId: CHAT_A,
 			rpc: { type: "agent_settled", aborted: false },
+		});
+		tab.close();
+		expect(
+			native().sent.some((m) => "rpc" in m && m.rpc.type === "abort"),
+		).toBe(false);
+		expect(native().disconnected).toBe(true);
+	});
+
+	test("a run ends on agent_settled or a successful abort response, not on a failed abort", async () => {
+		const { relay, native } = setup();
+		const tab = await openTab(relay, 1);
+		native().answerHello();
+		tab.send({
+			type: "helper",
+			message: {
+				chatId: CHAT_A,
+				rpc: { type: "prompt", id: "a1", message: "hi" },
+			},
+		});
+		accepted(native(), CHAT_A, "a1");
+		tab.close();
+		const abort = native().sent.at(-1);
+		const abortId = abort !== undefined && "rpc" in abort ? abort.rpc.id : "";
+		native().emit({
+			chatId: CHAT_A,
+			rpc: { id: abortId, type: "response", command: "abort", success: false },
+		});
+		expect(native().disconnected).toBe(false);
+		native().emit({
+			chatId: CHAT_A,
+			rpc: { id: abortId, type: "response", command: "abort", success: true },
+		});
+		expect(native().disconnected).toBe(true);
+	});
+
+	test("a rejected prompt never starts a run", async () => {
+		const { relay, native } = setup();
+		const tab = await openTab(relay, 1);
+		native().answerHello();
+		tab.send({
+			type: "helper",
+			message: {
+				chatId: CHAT_A,
+				rpc: { type: "prompt", id: "a1", message: "hi" },
+			},
+		});
+		native().emit({
+			chatId: CHAT_A,
+			rpc: {
+				id: "a1",
+				type: "response",
+				command: "prompt",
+				success: false,
+				error: "Agent is already processing.",
+			},
 		});
 		tab.close();
 		expect(
@@ -336,6 +403,7 @@ describe("relay", () => {
 				rpc: { type: "prompt", id: "a1", message: "hi" },
 			},
 		});
+		accepted(native(), CHAT_A, "a1");
 		tab.close();
 		expect(native().disconnected).toBe(false);
 		native().emit({
@@ -343,6 +411,50 @@ describe("relay", () => {
 			rpc: { type: "agent_settled", aborted: true },
 		});
 		expect(native().disconnected).toBe(true);
+	});
+
+	test("a tab can only send to its own chat", async () => {
+		const { relay, native } = setup();
+		const tabA = await openTab(relay, 1);
+		await openTab(relay, 2);
+		native().answerHello();
+		const before = native().sent.length;
+		tabA.send({
+			type: "helper",
+			message: {
+				chatId: CHAT_B,
+				rpc: { type: "prompt", id: "x1", message: "hijack" },
+			},
+		});
+		tabA.send({
+			type: "helper",
+			message: { type: "page.put", id: "x2", chatId: CHAT_B, markdown: "x" },
+		});
+		expect(native().sent).toHaveLength(before);
+		expect(tabA.received.filter((m) => m.type === "tab.rejected")).toEqual([
+			{ type: "tab.rejected", id: "x1", reason: expect.any(String) },
+			{ type: "tab.rejected", id: "x2", reason: expect.any(String) },
+		]);
+		tabA.send({ type: "helper", message: { type: "chat.list", id: "l1" } });
+		tabA.send({
+			type: "helper",
+			message: { type: "chat.delete", id: "d1", chatId: CHAT_B },
+		});
+		expect(native().sent.slice(before)).toEqual([
+			{ type: "chat.list", id: "l1" },
+			{ type: "chat.delete", id: "d1", chatId: CHAT_B },
+		]);
+	});
+
+	test("browser startup forgets tab → chat entries from the previous session", async () => {
+		const store = memoryStore();
+		store.data.set("tabChats", { "5": CHAT_A, "6": CHAT_B });
+		const { relay } = setup(store);
+		const tab = await openTab(relay, 9);
+		await relay.browserStarted();
+		expect(await store.get("tabChats")).toEqual({
+			"9": tab.lastState()?.chatId,
+		});
 	});
 
 	test("a removed tab forgets its chat and clears its page file", async () => {

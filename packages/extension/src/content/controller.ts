@@ -28,7 +28,7 @@ export class ContentController {
 	private queue: Promise<void> = Promise.resolve();
 	private unmount: (() => void) | null = null;
 	private readonly onKeyDown = (event: KeyboardEvent) => {
-		if (!matchesShortcut(event, this.shortcut)) {
+		if (!event.isTrusted || !matchesShortcut(event, this.shortcut)) {
 			return;
 		}
 		event.preventDefault();
@@ -71,7 +71,7 @@ export class ContentController {
 		const document = this.deps.window.document;
 		const host = document.createElement(HOST_TAG);
 		host.setAttribute("style", HOST_STYLE);
-		const root = host.attachShadow({ mode: "open" });
+		const root = host.attachShadow({ mode: "closed" });
 		document.documentElement.append(host);
 		const client = ui.createClient();
 		if (selection !== "") {

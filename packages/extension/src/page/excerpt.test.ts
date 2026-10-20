@@ -13,6 +13,7 @@ const PARAGRAPHS = Array.from(
 );
 const PAGE = PARAGRAPHS.join("\n\n");
 const BUDGET = 8_000;
+const FILL = BUDGET * 0.05;
 const MARKER = /\[… (\d+) characters omitted …\]/g;
 
 function blocks(excerpt: string): string[] {
@@ -51,16 +52,33 @@ describe("excerpt layout", () => {
 		expect(start?.startsWith("Paragraph 0 ")).toBe(true);
 		expect(end?.endsWith("end399.")).toBe(true);
 		expect(start?.length).toBeGreaterThan(BUDGET * 0.7);
-		expect(start?.length).toBeLessThanOrEqual(BUDGET * 0.75);
+		expect(start?.length).toBeLessThanOrEqual(BUDGET * 0.75 + FILL);
 		expect(end?.length).toBeGreaterThan(BUDGET * 0.2);
 		expect(end?.length).toBeLessThanOrEqual(BUDGET * 0.25);
 		const [count] = omitted(excerpt);
 		expect(count).toBe(PAGE.length - (start?.length ?? 0) - (end?.length ?? 0));
 	});
 
-	test("the start piece ends on a paragraph boundary", () => {
-		const [start] = blocks(layoutExcerpt(PAGE, [], BUDGET));
-		expect(start).toMatch(/end\d+\.$/);
+	test("uses the whole budget, within 2%, cutting pieces only between words", () => {
+		for (const quotes of [
+			[],
+			["Paragraph 200 word"],
+			["Paragraph 0 word"],
+			["end399."],
+			["Paragraph 100 word", "Paragraph 300 word"],
+			["Paragraph 200 word", "Paragraph 202 word"],
+		]) {
+			const pieces = blocks(layoutExcerpt(PAGE, quotes, BUDGET));
+			const used = pieces.reduce((sum, piece) => sum + piece.length, 0);
+			expect(used).toBeGreaterThanOrEqual(BUDGET * 0.98);
+			expect(used).toBeLessThanOrEqual(BUDGET);
+			for (const piece of pieces) {
+				const at = PAGE.indexOf(piece);
+				expect(at).toBeGreaterThanOrEqual(0);
+				expect(PAGE[at - 1] ?? " ").toMatch(/\s/);
+				expect(PAGE[at + piece.length] ?? " ").toMatch(/\s/);
+			}
+		}
 	});
 
 	test("one highlight gets ~15% start, ~80% window centered on it at paragraph boundaries, ~5% end", () => {
@@ -69,7 +87,7 @@ describe("excerpt layout", () => {
 		expect(parts).toHaveLength(3);
 		const [start, window, end] = parts as [string, string, string];
 		expect(start.startsWith("Paragraph 0 ")).toBe(true);
-		expect(start.length).toBeLessThanOrEqual(BUDGET * 0.15);
+		expect(start.length).toBeLessThanOrEqual(BUDGET * 0.15 + FILL);
 		expect(window.startsWith("Paragraph ")).toBe(true);
 		expect(window).toMatch(/end\d+\.$/);
 		expect(window.length).toBeGreaterThan(BUDGET * 0.7);
@@ -100,7 +118,7 @@ describe("excerpt layout", () => {
 		expect(parts).toHaveLength(2);
 		const [start, bottom] = parts as [string, string];
 		expect(start.startsWith("Paragraph 0 ")).toBe(true);
-		expect(start.length).toBeLessThanOrEqual(BUDGET * 0.15);
+		expect(start.length).toBeLessThanOrEqual(BUDGET * 0.15 + FILL);
 		expect(bottom.endsWith("end399.")).toBe(true);
 		expect(bottom.startsWith("Paragraph ")).toBe(true);
 		expect(bottom.length).toBeGreaterThan(BUDGET * 0.75);

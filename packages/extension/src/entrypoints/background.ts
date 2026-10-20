@@ -66,6 +66,10 @@ export default defineBackground(() => {
 		}
 	});
 
+	browser.runtime.onStartup.addListener(() => {
+		void relay.browserStarted();
+	});
+
 	browser.runtime.onInstalled.addListener(({ reason }) => {
 		if (reason === "install") {
 			void browser.runtime.openOptionsPage();

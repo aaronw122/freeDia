@@ -9,6 +9,7 @@ import type { TabToWorker, WorkerToTab } from "../lib/messages";
 import {
 	type KeyValueStore,
 	loadPageRecord,
+	removePageRecord,
 	savePageRecord,
 } from "../lib/store";
 import { buildPrompt, planSend } from "../page/context";
@@ -207,7 +208,9 @@ export class RealChatClient implements ChatClient {
 
 	async openChat(chatId: string): Promise<PiRpcRecord[]> {
 		await this.ready;
-		await this.switchChat({ type: "tab.openChat", chatId });
+		if (chatId !== this.chatId) {
+			await this.switchChat({ type: "tab.openChat", chatId });
+		}
 		const data = await this.rpc(chatId, { type: "get_messages" });
 		return (data.messages ?? []) as PiRpcRecord[];
 	}
@@ -219,6 +222,7 @@ export class RealChatClient implements ChatClient {
 			id: this.deps.randomUUID(),
 			chatId,
 		});
+		await removePageRecord(this.deps.store, chatId);
 		if (chatId === this.chatId) {
 			await this.newChat();
 		}
@@ -254,10 +258,23 @@ export class RealChatClient implements ChatClient {
 	}
 
 	private fromWorker(message: WorkerToTab): void {
+		if (message.type === "tab.rejected") {
+			this.settle(message.id, (pending) => {
+				pending.reject(new Error(message.reason));
+			});
+			return;
+		}
 		if (message.type === "tab.state") {
 			const chatChanged = message.chatId !== this.chatId;
-			if (message.connectionId !== this.connectionId) {
-				this.failPending("The freeDia helper disconnected.");
+			if (
+				message.connectionId !== this.connectionId ||
+				message.connection === "helper_missing"
+			) {
+				this.failPending(
+					message.connection === "helper_missing"
+						? "The freeDia helper is not installed."
+						: "The freeDia helper disconnected.",
+				);
 			}
 			this.chatId = message.chatId;
 			this.connectionId = message.connectionId;
