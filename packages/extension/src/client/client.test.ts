@@ -372,6 +372,35 @@ describe("chat client commands", () => {
 		expect(types.indexOf("set_model")).toBeLessThan(types.indexOf("prompt"));
 	});
 
+	test("stop before the prompt went out cancels the send instead of starting a hidden run", async () => {
+		const { client, worker } = setup();
+		await client.whenReady();
+		const held = Promise.withResolvers<Rpc>();
+		const answer = worker.answer.bind(worker);
+		worker.answer = (message) => {
+			if ("rpc" in message && message.rpc.type === "get_state") {
+				held.resolve(message.rpc as Rpc);
+				return;
+			}
+			answer(message);
+		};
+		client.addQuote("kept for the next try");
+		const sent = client.send("Q");
+		const getState = await held.promise;
+		await client.abort();
+		worker.reply(getState, true, { model: worker.models[0] });
+		await sent;
+		expect(worker.prompts()).toEqual([]);
+		expect(worker.pagePuts()).toBe(0);
+		expect(client.quotes().map((quote) => quote.text)).toEqual([
+			"kept for the next try",
+		]);
+		const types = worker
+			.helperSent()
+			.flatMap((m) => ("rpc" in m ? [m.rpc.type] : []));
+		expect(types).toEqual(["get_state", "abort"]);
+	});
+
 	test("listChats and deleteChat use the helper commands", async () => {
 		const { client, worker } = setup();
 		expect(await client.listChats()).toEqual([

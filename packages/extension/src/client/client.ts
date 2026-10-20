@@ -74,6 +74,10 @@ export class RealChatClient implements ChatClient {
 	private readability: PageReadability;
 	private model: ModelInfo | null = null;
 	private modelChange: Promise<void> = Promise.resolve();
+	private readonly preparing = new Set<{
+		chatId: string;
+		cancelled: boolean;
+	}>();
 	private readonly listeners = new Set<ClientListener>();
 	private readonly pending = new Map<string, Pending>();
 	private readonly chatWaiters: ((chatId: string) => void)[] = [];
@@ -110,8 +114,21 @@ export class RealChatClient implements ChatClient {
 
 	async send(question: string): Promise<void> {
 		await this.ready;
-		await this.modelChange;
-		const chatId = this.chatId;
+		const preparing = { chatId: this.chatId, cancelled: false };
+		this.preparing.add(preparing);
+		try {
+			await this.modelChange;
+			await this.sendPrepared(preparing, question);
+		} finally {
+			this.preparing.delete(preparing);
+		}
+	}
+
+	private async sendPrepared(
+		preparing: { chatId: string; cancelled: boolean },
+		question: string,
+	): Promise<void> {
+		const { chatId } = preparing;
 		const page = this.deps.readPage();
 		this.setReadability(page.readability);
 		const quotes = this.quoteList.map((quote) => quote.text);
@@ -130,13 +147,16 @@ export class RealChatClient implements ChatClient {
 		const putFile =
 			plan.putFile &&
 			new TextEncoder().encode(page.markdown).length <= MAX_PAGE_BYTES;
-		if (putFile) {
+		if (putFile && !preparing.cancelled) {
 			await this.command({
 				type: "page.put",
 				id: this.deps.randomUUID(),
 				chatId,
 				markdown: page.markdown,
 			});
+		}
+		if (preparing.cancelled) {
+			return;
 		}
 		const message = buildPrompt({
 			page,
@@ -158,6 +178,11 @@ export class RealChatClient implements ChatClient {
 
 	async abort(): Promise<void> {
 		await this.ready;
+		for (const preparing of this.preparing) {
+			if (preparing.chatId === this.chatId) {
+				preparing.cancelled = true;
+			}
+		}
 		await this.rpc(this.chatId, { type: "abort" });
 	}
 
