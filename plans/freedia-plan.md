@@ -192,13 +192,16 @@ Spike outcomes may amend the contract before Bucket 1 starts.
   - Typed client API for the UI: `send()`, `abort()`, `newChat()`, `addQuote()`, `setModel()`, `listChats()`, `openChat(chatId)`, `deleteChat()`, event subscription.
   - Tests: extraction + fallback, excerpt layout (no highlight, one, several, overlapping, not found, page under budget), re-send rules, prompt text built correctly (first message vs follow-up), relay routing per tab.
 - [ ] **1C Chat UI** (`packages/extension/src/ui`, built against a mock client implementing 1B's API)
-  - Dia-style floating chat window: header (model picker, "+" new chat, history, expand, close; no chat title), quote chips, message list with streaming markdown (react-markdown + code highlighting), composer, stop button.
-  - Loading indicator: "Starting…" / "Waiting for another chat to finish…" from `chat.status`; streaming and done come from pi's own events.
+  - Dia-style floating chat window (strings from `notes/research-dia-ui.md`): header ("+" new chat, history, expand, close; no chat title, no model picker), message list with streaming markdown (react-markdown + code highlighting), composer, stop button.
+  - Composer: **model picker in the composer toolbar beside Send**, as in Dia; placeholder "Ask a question about this page", then "Ask another question". Send is disabled while a reply is running (pi rejects a second `prompt` mid-run).
+  - Highlights: shown as a composer attachment chip labelled **"Selected Text"**, as in Dia (`DynamicTextSelectionAttachmentDataSource`); re-highlighting adds another chip. Dia's exact chip visuals weren't observed: match them from a screenshot during 1C.
+  - Loading states: "Starting…" / "Waiting for another chat to finish…" from `chat.status`, then **"Thinking…"** (Dia's string) from `prompt` accepted until the first text delta; streaming and done come from pi's own events.
+  - Copy, as in Dia: copy button on code blocks ("Copy code") and **"Copy"** on each assistant message. Dia's "Copy as image", "Edit message" and feedback buttons are out of scope.
+  - **Closing mid-reply cancels it.** Closing the chat window while a reply streams shows Dia's confirm, "Cancel this response?"; confirming sends `abort` and closes. The reply never finishes in the background. Tab closed or navigated away mid-reply: the service worker sends `abort` (no confirm possible). The partial reply stays in the history with `stopReason: "aborted"`.
   - Drag, resize, expand; position/size persisted (`chrome.storage.local`).
-  - History panel: list with titles, reopen, delete.
+  - History panel: list with titles, reopen, delete (with a "Delete this chat?" confirm, as in Dia).
   - Error states with fix text for every `helper.error` code and for pi's own error events (provider rejected, rate limited, not signed in); "Install helper" card with a copyable command.
-  - Re-highlight adds a quote chip to the current chat.
-  - Tests: quote add, new chat resets, model switch updates selection, stop, queued state, error rendering.
+  - Tests: "Selected Text" chip add, new chat resets, model switch updates selection, send disabled mid-reply, "Thinking…" before the first delta, copy (code and message), close mid-reply → confirm → `abort`, stop, queued state, error rendering.
 
 ### Bucket 2 — after Bucket 1
 
