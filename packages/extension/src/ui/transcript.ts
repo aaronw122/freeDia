@@ -35,6 +35,7 @@ export interface RetryInfo {
 	maxAttempts: number;
 	delayMs: number;
 	errorMessage: string;
+	provider: string | null;
 }
 
 export type ChatError =
@@ -350,6 +351,10 @@ function onRetryStart(
 			delayMs: typeof record.delayMs === "number" ? record.delayMs : 0,
 			errorMessage:
 				typeof record.errorMessage === "string" ? record.errorMessage : "",
+			provider:
+				last?.kind === "assistant"
+					? last.provider
+					: (state.retry?.provider ?? null),
 		},
 	};
 }

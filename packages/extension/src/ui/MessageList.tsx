@@ -22,7 +22,7 @@ function Dots() {
 
 function retryText(retry: RetryInfo | null): string {
 	if (!retry) return "Retrying…";
-	const { title } = replyErrorView(retry.errorMessage, null);
+	const { title } = replyErrorView(retry.errorMessage, retry.provider);
 	return `${title}. Retrying… (attempt ${retry.attempt} of ${retry.maxAttempts})`;
 }
 

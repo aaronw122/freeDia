@@ -23,7 +23,20 @@ export function ErrorCard({ view }: { view: ErrorView }) {
 				</span>
 				<div className="min-w-0 flex-1">
 					<p className="font-medium text-neutral-900">{view.title}</p>
-					<p className="mt-0.5 text-neutral-700">{view.fix}</p>
+					<p className="mt-0.5 text-neutral-700">
+						{view.fix.split(/(`[^`]+`)/).map((piece) =>
+							piece.startsWith("`") && piece.endsWith("`") ? (
+								<code
+									key={piece}
+									className="rounded bg-white/80 px-1 font-mono text-xs"
+								>
+									{piece.slice(1, -1)}
+								</code>
+							) : (
+								piece
+							),
+						)}
+					</p>
 					{view.command && <CommandLine command={view.command} />}
 					{view.detail && (
 						<details className="mt-2 text-xs text-neutral-500">

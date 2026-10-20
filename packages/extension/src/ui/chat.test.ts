@@ -535,7 +535,7 @@ describe("errors", () => {
 			);
 			const alert = h.ui.getByRole("alert");
 			expect(alert.textContent).toContain(title);
-			expect(alert.textContent).toContain(fix);
+			expect(alert.textContent).toContain(fix.replaceAll("`", ""));
 			expect(h.ui.queryByRole("status")).toBeNull();
 			expect(h.ui.getByRole("button", { name: "Send" })).toBeTruthy();
 		});
