@@ -77,6 +77,10 @@ Requests from the extension carry a string `id`; the helper echoes it on the rep
 
 Exact JSON for each is pinned in `packages/helper/src/protocol.test.ts`.
 
+**Size caps (extension → helper).** Both are refused with `helper.error` `spawn_failed`; no separate error code, since neither happens in normal use. The constants are `MAX_PAGE_BYTES` and `MAX_EXTENSION_MESSAGE_BYTES` in `protocol.ts`.
+- `page.put` markdown over **5 MB** (UTF-8 bytes): the error carries the request's `id` and `chatId`, the chat's old page file is deleted, and the fix text says the chat keeps working from the excerpt. The extension still sends the excerpt in the message and skips the full-page file.
+- Any native message over **8 MB**: skipped without being buffered, then answered with an error that has no `id` or `chatId` (the message was never parsed) and fix text "Try again with a shorter selection or message." Later messages are decoded normally.
+
 **Chats = pi sessions.** `chatId` is the pi session ID: there is one ID, not two. The extension generates it with `crypto.randomUUID()` when a chat starts (a lowercase UUID v4, `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`) and the helper rejects anything else, since the ID reaches pi's command line and the sessions directory. pi's own generated IDs are UUID v7; pi accepts any ID matching its `assertValidSessionId`, which v4 does, and `--session-id` creates the session on first use. Sessions live in `~/.freedia/chats` (pi's `--session-dir`) as `<timestamp>_<chatId>.jsonl`, separate from the user's own pi coding sessions. No freeDia chat file format; no IndexedDB cache. pi is always launched with the same working directory (`~/.freedia`), because pi resolves sessions relative to its working directory; a fixed one keeps IDs resolving on resume. To open a freeDia chat in pi directly: from `~/.freedia`, `PI_CODING_AGENT_DIR=~/.freedia/pi-agent pi --session-dir ~/.freedia/chats --session <chatId or its first 8 chars>`, or `-r` for pi's picker.
 
 **pi launch (one process per active chat):**
