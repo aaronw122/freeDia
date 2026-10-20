@@ -13,13 +13,18 @@ freeDia/
 
 Principle: **the extension is UI only and the helper is a plain pipe.** pi owns the conversation (context, follow-ups, model switching, compaction, sessions, tools). freeDia adds only what pi doesn't have: routing per chat, a process pool, and listing/deleting chats.
 
-Defaults decided here: page text = readable article text (Mozilla Readability), capped at 8,000 characters, highlight always included in full; macOS first.
+Defaults decided here: page text = main content as markdown, excerpt sized to 10% of the model's context window and centered on any highlight, full page available to pi as a temporary file (see Page text); macOS first.
 
 Decided 2026-10-19:
 - **Separate pi setup.** freeDia runs pi with its own agent dir (`PI_CODING_AGENT_DIR=~/.freedia/pi-agent`): its own sign-ins and settings, and none of the user's pi extensions, skills, prompt templates or AGENTS.md files.
 - **Thinking level:** pi's default (medium).
 - **Tab navigates to a new page:** same chat continues; the new page's URL and text are sent with the next message.
 - **Helper/extension version mismatch:** helper auto-updates itself; the extension shows "Update helper" only as a fallback (see Updates).
+
+Decided 2026-10-20:
+- **chatId = lowercase UUID v4** from `crypto.randomUUID()`; it is the pi session ID (see Contract).
+- **No warm pool (plan A).** pi exits after every reply and is respawned per message with `--session-id`. Dia's agent server does the same with the Claude Agent SDK (`--resume` per request; no model process alive while idle). Revisit only if respawn becomes noticeable.
+- **Page text** as in the Page text section: excerpt kept in the chat, full page as a temporary file, re-sent only when the page changes or after 30 quiet minutes.
 
 ## Environment prerequisites
 
@@ -64,6 +69,8 @@ Requests from the extension carry a string `id`; the helper echoes it on the rep
 | `chat.delete`                      | `{ id, chatId }` → `{ id, chatId }`                                     | Delete a chat                                  |
 | `chat.status` (helper → ext, push) | `{ chatId, state }`, where `state` is `starting` or `queued`            | Loading indicator before pi's own events begin |
 | `helper.error` (helper → ext)      | `{ id?, chatId?, code, message, fix }`; `id` set when it answers a request | `pi_missing`, `not_signed_in`, `spawn_failed`. Provider errors (rejected, rate limited) arrive as pi's own error events, untouched. |
+| `page.put`                         | `{ id, chatId, markdown }` → `{ id, chatId }`                           | Write/replace the chat's temporary full-page file (see Page text) |
+| `page.clear`                       | `{ id, chatId }` → `{ id, chatId }`                                     | Delete it (new chat, tab closed). `chat.delete` also deletes it |
 
 Exact JSON for each is pinned in `packages/helper/src/protocol.test.ts`.
 
@@ -80,9 +87,9 @@ PI_CODING_AGENT_DIR=~/.freedia/pi-agent \
   --append-system-prompt "<freeDia rules>"
 ```
 
-`--session-id` creates the session if new and resumes it if it exists, so "open", "resume" and "reopen from history" are the same operation. `<bun>` is the helper's own runtime (`process.execPath` with `BUN_BE_BUN=1`). The freeDia rules: answer about the page the user is on; read-only; only read `~/.freedia/chats` when the user explicitly asks about previous chats.
+`--session-id` creates the session if new and resumes it if it exists, so "open", "resume" and "reopen from history" are the same operation. `<bun>` is the helper's own runtime (`process.execPath` with `BUN_BE_BUN=1`). The freeDia rules: answer about the page the user is on; the message carries a page excerpt, and the full page is at `~/.freedia/pages/<chatId>.md` (read it with `read`/`grep` when the excerpt isn't enough); read-only; only read `~/.freedia/chats` when the user explicitly asks about previous chats.
 
-**Page context is part of the message text.** The extension builds the `prompt` message: URL, title, highlighted quotes, page text (first message, or when the tab has navigated to a new page or the quotes change), then the question. pi stores it like any message, so follow-ups and resumed chats keep it.
+**Page context is part of the message text.** The extension builds the `prompt` message: URL, title, highlighted quotes, page excerpt (only when re-sent, see Page text), then the question. pi stores it like any message, so follow-ups and resumed chats keep it. The full page goes to the helper with `page.put`, never into the message.
 
 **Stop a reply.** The stop button sends pi's `abort` command; the helper just forwards it to that chat's pi process. pi stops the reply and keeps the chat open for the next message. Whether the half-finished reply is kept in the session is checked in S1.
 
@@ -107,7 +114,22 @@ Memory: ~91 MB per pi process, only while a chat is generating, so at most 3 × 
 
 ## Page text
 
-Page text is capped at **8,000 characters** (~2k tokens) by default, taken from the start of the readable article text. The highlight is always sent in full on top of that. Dia doesn't publish its own limit.
+Modelled on Dia (`notes/research-page-text-cap.md`, `~/code/personal/Projects/notes/dia-decompile-analysis.md` §3): page as markdown, a bounded excerpt in the message, the full page readable on demand. freeDia differs in one place: Dia cuts prefix + suffix and sends the highlight separately; freeDia also centers the excerpt on the highlight, so the model sees the text around it.
+
+1. **Extraction (extension, current tab):** Readability → markdown (Turndown). Fall back to visible `innerText` when Readability returns null or keeps < ~20% of it. Compute a fingerprint (hash) of the markdown.
+2. **Excerpt (in the message, saved in the chat):** budget = **10% of the selected model's `contextWindow`** (from `get_available_models`), with a floor and ceiling, converted at ~4 chars/token.
+
+   | | Start | Middle | End |
+   |---|---|---|---|
+   | No highlight | ~75% | dropped: `[… N characters omitted …]` | ~25% |
+   | With highlight | ~15% | ~80% centered on the highlight, cut at paragraph boundaries; rest dropped | ~5% |
+
+   Several highlights split the 80%; overlapping windows merge. The highlight is located by normalized text match (markdown syntax and whitespace stripped); not found → no-highlight layout. Pieces never overlap; a page under budget is sent whole.
+3. **Highlight:** always sent in full as its own block, capped at the same budget against select-all.
+4. **Full page (temporary, never in the chat):** sent with `page.put`; the helper writes `~/.freedia/pages/<chatId>.md`, which pi can read with its read-only tools.
+5. **When to re-send excerpt + full page:** fingerprint changed (navigation or content change), chat quiet ≥ **30 min**, or the extension reconnected to the helper. Otherwise the message carries only the question and quotes.
+6. **Cleanup:** helper deletes the file after **60 min** unused (longer than the extension's 30, so the extension never assumes a deleted file), on `page.clear` / `chat.delete`, and clears `~/.freedia/pages` on startup.
+7. **Reopened chats:** earlier excerpts stay in the history; the next message builds a fresh file from the page the user is on now.
 
 ## Phases
 
@@ -135,6 +157,7 @@ Spike outcomes may amend the contract before Bucket 1 starts.
   - Process pool: spawn on demand for a `chatId` on any command (prompt, `get_messages` for a reopened chat, etc.), max `maxConcurrent` (default 3) generating + queue, exit each process when its run settles or is aborted, `chat.status` pushes, clean shutdown when the extension disconnects (let in-flight runs finish saving, then exit).
   - Model list: when no chat process is running, answer `get_available_models` from a short-lived pi process and cache the result until the helper exits.
   - `helper.hello`, `chat.list`, `chat.delete` over `~/.freedia/chats`. pi always launched with cwd `~/.freedia`.
+  - Page files: `page.put` / `page.clear` over `~/.freedia/pages/<chatId>.md`; delete after 60 min unused, on `chat.delete`, and clear the folder on startup.
   - Preflight: pi missing, not signed in → `helper.error` with `fix` text.
   - Self-update: on `helper.hello`, at most once a day, check the npm registry for a newer `freedia`; download the new binary next to the old one, swap it after in-flight chats finish, and keep the protocol backward compatible with the previous extension version. pi version is pinned per helper release and updated with it.
   - Distribution: `bun build --compile` single binary (macOS arm64/x64 first), published to the npm registry and installed with `bunx freedia install`. Users need Bun only to run the installer; the helper binary carries its own Bun, which also runs pi, so the user's Bun version doesn't matter after install.
@@ -143,11 +166,11 @@ Spike outcomes may amend the contract before Bucket 1 starts.
 - [ ] **1B Extension shell** (`packages/extension`, no chat UI)
   - Manifest: `nativeMessaging`, `storage`, `scripting`, `activeTab`; command `open-chat` (`Ctrl+Shift+E` / mac `Command+Shift+E`).
   - Content script (tiny, all http/https pages): selection capture, Cmd+E handler when Dia mode is on, lazy-load the chat UI into a shadow-DOM root on first open.
-  - Page context: Readability extraction, 8,000-character cap, URL + title; detects navigation within the tab; builds the `prompt` message text.
+  - Page context (see Page text): Readability → markdown with `innerText` fallback, fingerprint, excerpt sized to 10% of the model's context window and centered on highlights, `page.put`/`page.clear`, re-send rules (fingerprint change, 30-min quiet, reconnect); URL + title; builds the `prompt` message text.
   - Service worker: native port lifecycle and reconnect, `helper.hello` with the concurrency setting, relay between tab ports and the helper by `chatId`, `helper_missing` detection, new `chatId` generation, tab → chatId map in `chrome.storage.local`.
   - Settings + first run: "Using Dia?" toggle, shortcut display/link to `chrome://extensions/shortcuts`, max concurrent chats.
   - Typed client API for the UI: `send()`, `abort()`, `newChat()`, `addQuote()`, `setModel()`, `listChats()`, `openChat(chatId)`, `deleteChat()`, event subscription.
-  - Tests: context extraction/cap, prompt text built correctly (first message vs follow-up), relay routing per tab.
+  - Tests: extraction + fallback, excerpt layout (no highlight, one, several, overlapping, not found, page under budget), re-send rules, prompt text built correctly (first message vs follow-up), relay routing per tab.
 - [ ] **1C Chat UI** (`packages/extension/src/ui`, built against a mock client implementing 1B's API)
   - Dia-style floating chat window: header (title, model picker, "+" new chat, history, expand, close), quote chips, message list with streaming markdown (react-markdown + code highlighting), composer, stop button.
   - Loading indicator: "Starting…" / "Waiting for another chat to finish…" from `chat.status`; streaming and done come from pi's own events.
