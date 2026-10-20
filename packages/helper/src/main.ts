@@ -162,7 +162,7 @@ async function runCli(argv: string[]): Promise<number> {
 }
 
 const argv = process.argv.slice(2);
-if (argv.length === 0 || argv[0]?.startsWith("chrome-extension://")) {
+if (argv[0]?.startsWith("chrome-extension://")) {
 	await runHost(process.env.FREEDIA_HOME ?? homedir());
 } else {
 	process.exit(await runCli(argv));

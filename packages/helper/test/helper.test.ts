@@ -625,11 +625,12 @@ describe("chat titles", () => {
 		expect(
 			h
 				.rpcs(CHAT_A)
-				.some(
+				.filter(
 					(rpc) =>
-						rpc.type === "response" && rpc.command === "set_session_name",
+						rpc.type === "session_info_changed" ||
+						rpc.command === "set_session_name",
 				),
-		).toBe(false);
+		).toEqual([]);
 	});
 
 	test("a busy chat gets set_session_name as the first command of its next spawn", async () => {

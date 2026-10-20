@@ -8,8 +8,13 @@
 	"exports": {
 		"./protocol": "./src/protocol.ts"
 	},
+	"files": [
+		"src",
+		"dist"
+	],
 	"scripts": {
 		"build": "bun build --compile src/main.ts --outfile dist/freedia-helper",
+		"build:release": "bun build --compile --target=bun-darwin-arm64 src/main.ts --outfile dist/freedia-helper-darwin-arm64 && bun build --compile --target=bun-darwin-x64 src/main.ts --outfile dist/freedia-helper-darwin-x64",
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {

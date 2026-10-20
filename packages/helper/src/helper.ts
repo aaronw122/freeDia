@@ -571,7 +571,9 @@ export class Helper {
 			return;
 		}
 		const internal =
-			typeof record.id === "string" && record.id.startsWith(INTERNAL_PREFIX);
+			(typeof record.id === "string" &&
+				record.id.startsWith(INTERNAL_PREFIX)) ||
+			record.type === "session_info_changed";
 		if (!internal) {
 			this.output.envelopeJson(chat.chatId, line);
 		}
