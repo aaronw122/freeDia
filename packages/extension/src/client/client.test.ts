@@ -340,6 +340,38 @@ describe("chat client commands", () => {
 		});
 	});
 
+	test("a message sent right after a model switch waits for set_model's answer", async () => {
+		const { client, worker } = setup({
+			readability: "unreadable",
+			markdown: "",
+		});
+		await client.whenReady();
+		const held = Promise.withResolvers<Rpc>();
+		const answer = worker.answer.bind(worker);
+		worker.answer = (message) => {
+			if ("rpc" in message && message.rpc.type === "set_model") {
+				held.resolve(message.rpc as Rpc);
+				return;
+			}
+			answer(message);
+		};
+		const switched = client.setModel({ provider: "faux", modelId: "faux-2" });
+		const sent = client.send("Q");
+		const setModel = await held.promise;
+		for (let round = 0; round < 5; round++) {
+			await client.listChats();
+		}
+		expect(worker.prompts()).toEqual([]);
+		worker.reply(setModel, true, { ...worker.models[0], id: "faux-2" });
+		await switched;
+		await sent;
+		expect(worker.prompts()).toHaveLength(1);
+		const types = worker
+			.helperSent()
+			.flatMap((m) => ("rpc" in m ? [m.rpc.type] : []));
+		expect(types.indexOf("set_model")).toBeLessThan(types.indexOf("prompt"));
+	});
+
 	test("listChats and deleteChat use the helper commands", async () => {
 		const { client, worker } = setup();
 		expect(await client.listChats()).toEqual([

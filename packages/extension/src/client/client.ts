@@ -73,6 +73,7 @@ export class RealChatClient implements ChatClient {
 	private quoteList: Quote[] = [];
 	private readability: PageReadability;
 	private model: ModelInfo | null = null;
+	private modelChange: Promise<void> = Promise.resolve();
 	private readonly listeners = new Set<ClientListener>();
 	private readonly pending = new Map<string, Pending>();
 	private readonly chatWaiters: ((chatId: string) => void)[] = [];
@@ -109,6 +110,7 @@ export class RealChatClient implements ChatClient {
 
 	async send(question: string): Promise<void> {
 		await this.ready;
+		await this.modelChange;
 		const chatId = this.chatId;
 		const page = this.deps.readPage();
 		this.setReadability(page.readability);
@@ -191,14 +193,18 @@ export class RealChatClient implements ChatClient {
 			: { provider: model.provider, modelId: model.modelId };
 	}
 
-	async setModel(model: ModelRef): Promise<void> {
-		await this.ready;
-		const data = await this.rpc(this.chatId, {
-			type: "set_model",
-			provider: model.provider,
-			modelId: model.modelId,
+	setModel(model: ModelRef): Promise<void> {
+		const change = this.modelChange.then(async () => {
+			await this.ready;
+			const data = await this.rpc(this.chatId, {
+				type: "set_model",
+				provider: model.provider,
+				modelId: model.modelId,
+			});
+			this.model = toModelInfo(data as unknown as PiModel);
 		});
-		this.model = toModelInfo(data as unknown as PiModel);
+		this.modelChange = change.catch(() => undefined);
+		return change;
 	}
 
 	async listChats(): Promise<ChatSummary[]> {
