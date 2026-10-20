@@ -124,7 +124,9 @@ Modelled on Dia (`notes/research-page-text-cap.md`, `~/code/personal/Projects/no
    | No highlight | ~75% | dropped: `[… N characters omitted …]` | ~25% |
    | With highlight | ~15% | ~80% centered on the highlight, cut at paragraph boundaries; rest dropped | ~5% |
 
-   Several highlights split the 80%; overlapping windows merge. The highlight is located by normalized text match (markdown syntax and whitespace stripped); not found → no-highlight layout. Pieces never overlap; a page under budget is sent whole.
+   Several highlights split the 80%; overlapping windows merge. The highlight is located by normalized text match (markdown syntax and whitespace stripped); not found → no-highlight layout. A page under budget is sent whole.
+
+   **Highlight near the start or end:** the window can't be centered, so the unused share moves to the other side: a highlight in the first part of the page takes everything after it, one near the end takes everything before it. A window that reaches the start or end piece merges with it, so nothing is sent twice and the whole budget is always used. E.g. highlight in the intro → one continuous block from the top of the page plus the ~5% end.
 3. **Highlight:** always sent in full as its own block, capped at the same budget against select-all.
 4. **Full page (temporary, never in the chat):** sent with `page.put`; the helper writes `~/.freedia/pages/<chatId>.md`, which pi can read with its read-only tools.
 5. **When to re-send excerpt + full page:** fingerprint changed (navigation or content change), chat quiet ≥ **30 min**, or the extension reconnected to the helper. Otherwise the message carries only the question and quotes.
