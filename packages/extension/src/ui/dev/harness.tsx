@@ -115,6 +115,13 @@ const scenes: Record<string, Scene> = {
 			.querySelector<HTMLButtonElement>("button[aria-label=History]")
 			?.click();
 	},
+	async tool(client) {
+		const run = promptRun("tools-readonly", 1);
+		const index = run.findIndex(
+			(entry) => entry.record.type === "tool_execution_end",
+		);
+		client.play(run.slice(0, index));
+	},
 	async live() {},
 };
 
