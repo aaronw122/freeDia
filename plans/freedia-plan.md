@@ -56,7 +56,7 @@ Transport: extension service worker ↔ helper over `chrome.runtime.connectNativ
 | `get_messages`                       | Render a reopened chat                                                                                                                            |
 | `get_state`                          | Status (model, streaming, etc.)                                                                                                                   |
 
-Blocked on purpose: `bash` (runs shell commands directly, bypassing `--tools`), `export_html`, `fork`, `clone`, `switch_session`, `new_session`, compaction/queue settings. Final list confirmed in S1.
+Blocked on purpose: `bash` (runs shell commands directly, bypassing `--tools`), `export_html`, `fork`, `clone`, `switch_session`, `new_session`, compaction/queue settings. Final list confirmed in S1. `set_session_name` is also blocked for the extension; only the helper sends it, for chat titles.
 
 **Helper's own commands (no `rpc` field; pi has no equivalent):**
 
@@ -65,7 +65,7 @@ Requests from the extension carry a string `id`; the helper echoes it on the rep
 | type                               | Payload → reply                                                         | Purpose                                        |
 | ---------------------------------- | ----------------------------------------------------------------------- | ---------------------------------------------- |
 | `helper.hello`                     | `{ id, maxConcurrent }` → `{ id, helperVersion, piVersion }`            | Detect missing/outdated helper; passes the user's concurrency setting |
-| `chat.list`                        | `{ id }` → `{ id, chats: [{ chatId, title, updatedAt }] }`              | History panel. `updatedAt` is an ISO 8601 string |
+| `chat.list`                        | `{ id }` → `{ id, chats: [{ chatId, title, updatedAt }] }`              | History panel. `updatedAt` is an ISO 8601 string. `title` is the freeDia title (see Chat titles), else the first 8 words of the first question |
 | `chat.delete`                      | `{ id, chatId }` → `{ id, chatId }`                                     | Delete a chat                                  |
 | `chat.status` (helper → ext, push) | `{ chatId, state }`, where `state` is `starting` or `queued`            | Loading indicator before pi's own events begin |
 | `helper.error` (helper → ext)      | `{ id?, chatId?, code, message, fix }`; `id` set when it answers a request | `pi_missing`, `not_signed_in`, `spawn_failed`. Provider errors (rejected, rate limited) arrive as pi's own error events, untouched. |
@@ -89,7 +89,12 @@ PI_CODING_AGENT_DIR=~/.freedia/pi-agent \
 
 `--session-id` creates the session if new and resumes it if it exists, so "open", "resume" and "reopen from history" are the same operation. `<bun>` is the helper's own runtime (`process.execPath` with `BUN_BE_BUN=1`). The freeDia rules: answer about the page the user is on; the message carries a page excerpt, and the full page is at `~/.freedia/pages/<chatId>.md` (read it with `read`/`grep` when the excerpt isn't enough); read-only; only read `~/.freedia/chats` when the user explicitly asks about previous chats.
 
-**Page context is part of the message text.** The extension builds the `prompt` message: URL, title, highlighted quotes, page excerpt (only when re-sent, see Page text), then the question. pi stores it like any message, so follow-ups and resumed chats keep it. The full page goes to the helper with `page.put`, never into the message.
+**Page context is part of the message text.** The extension builds the `prompt` message: URL, title, highlighted quotes, page excerpt (only when re-sent, see Page text), then the question under a fixed `## Question` heading, so the helper can find it for titling. pi stores it like any message, so follow-ups and resumed chats keep it. The full page goes to the helper with `page.put`, never into the message.
+
+**Chat titles.** Set once, by the helper, after the chat's first reply settles; never renamed later. Shown only in the history panel, never in the chat window.
+1. The helper runs a one-shot pi with the chat's model and `--no-session` (no session file is created, verified 2026-10-20): "Title this chat in 8 words or fewer", given the page title and the first question only, not the page text.
+2. It writes the result with pi's `set_session_name` (stored as a `session_info` entry; no user message is added, verified 2026-10-20): on a short-lived spawn of the chat's session if it's idle, or as the first command on its next spawn if the user already sent another message. Never with `--model` (resume rule).
+3. Over 8 words → cut to 8. Title call fails → no name is written, and `chat.list` falls back to the first 8 words of the first question.
 
 **Stop a reply.** The stop button sends pi's `abort` command; the helper just forwards it to that chat's pi process. pi stops the reply and keeps the chat open for the next message. Whether the half-finished reply is kept in the session is checked in S1.
 
@@ -171,6 +176,7 @@ Spike outcomes may amend the contract before Bucket 1 starts.
   - Process pool: spawn on demand for a `chatId` on any command (prompt, `get_messages` for a reopened chat, etc.), max `maxConcurrent` (default 3) generating + queue, exit each process when its run settles or is aborted, `chat.status` pushes, clean shutdown when the extension disconnects (let in-flight runs finish saving, then exit).
   - Model list: when no chat process is running, answer `get_available_models` from a short-lived pi process and cache the result until the helper exits.
   - `helper.hello`, `chat.list`, `chat.delete` over `~/.freedia/chats`. pi always launched with cwd `~/.freedia`.
+  - Chat titles (see Contract): one-shot `--no-session` title call after the first reply, `set_session_name` on the chat's session, 8-word cut and fallback.
   - Page files: `page.put` / `page.clear` over `~/.freedia/pages/<chatId>.md`; delete after 60 min unused, on `chat.delete`, and clear the folder on startup.
   - Preflight: pi missing, not signed in → `helper.error` with `fix` text.
   - Self-update: on `helper.hello`, at most once a day, check the npm registry for a newer `freedia`; download the new binary next to the old one, swap it after in-flight chats finish, and keep the protocol backward compatible with the previous extension version. pi version is pinned per helper release and updated with it.
@@ -186,10 +192,10 @@ Spike outcomes may amend the contract before Bucket 1 starts.
   - Typed client API for the UI: `send()`, `abort()`, `newChat()`, `addQuote()`, `setModel()`, `listChats()`, `openChat(chatId)`, `deleteChat()`, event subscription.
   - Tests: extraction + fallback, excerpt layout (no highlight, one, several, overlapping, not found, page under budget), re-send rules, prompt text built correctly (first message vs follow-up), relay routing per tab.
 - [ ] **1C Chat UI** (`packages/extension/src/ui`, built against a mock client implementing 1B's API)
-  - Dia-style floating chat window: header (title, model picker, "+" new chat, history, expand, close), quote chips, message list with streaming markdown (react-markdown + code highlighting), composer, stop button.
+  - Dia-style floating chat window: header (model picker, "+" new chat, history, expand, close; no chat title), quote chips, message list with streaming markdown (react-markdown + code highlighting), composer, stop button.
   - Loading indicator: "Starting…" / "Waiting for another chat to finish…" from `chat.status`; streaming and done come from pi's own events.
   - Drag, resize, expand; position/size persisted (`chrome.storage.local`).
-  - History panel: list, reopen, delete.
+  - History panel: list with titles, reopen, delete.
   - Error states with fix text for every `helper.error` code and for pi's own error events (provider rejected, rate limited, not signed in); "Install helper" card with a copyable command.
   - Re-highlight adds a quote chip to the current chat.
   - Tests: quote add, new chat resets, model switch updates selection, stop, queued state, error rendering.
