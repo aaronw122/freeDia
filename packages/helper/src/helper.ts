@@ -653,7 +653,7 @@ export class Helper {
 		if (hadSession) {
 			this.pendingModels.delete(chatId);
 		}
-		const model = this.launchModel(chatId);
+		const model = await this.usableModel(this.launchModel(chatId));
 		const proc = spawnPi(this.pi, chatLaunchArgs(this.pi, chatId, model));
 		const chat: ChatProcess = {
 			chatId,
@@ -888,6 +888,32 @@ export class Helper {
 			...rest,
 			type: "response",
 		});
+	}
+
+	private async usableModel(
+		model: string | undefined,
+	): Promise<string | undefined> {
+		if (model === undefined || this.models === undefined) {
+			return model;
+		}
+		const data = (await this.models)?.data;
+		if (
+			typeof data !== "object" ||
+			data === null ||
+			!("models" in data) ||
+			!Array.isArray(data.models)
+		) {
+			return model;
+		}
+		const known = data.models.some(
+			(entry: unknown) =>
+				typeof entry === "object" &&
+				entry !== null &&
+				"provider" in entry &&
+				"id" in entry &&
+				`${entry.provider}/${entry.id}` === model,
+		);
+		return known ? model : undefined;
 	}
 
 	private maybeTitle(chatId: string): void {

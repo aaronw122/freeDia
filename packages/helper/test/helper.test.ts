@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+	appendFileSync,
 	existsSync,
 	mkdirSync,
 	readdirSync,
@@ -223,6 +224,26 @@ describe("pi launch", () => {
 		);
 		const second = h.chatSpawns(CHAT_A)[1]?.argv ?? [];
 		expect(second[second.indexOf("--model") + 1]).toBe("faux/faux-2");
+	});
+
+	test("a resumed chat whose model pi no longer lists starts without --model", async () => {
+		const h = helper();
+		await h.rpc(CHAT_A, prompt("r1", "hello"));
+		await h.waitForRpc(
+			CHAT_A,
+			(rpc) => rpc.type === "agent_settled",
+			"first reply",
+		);
+		await h.waitIdle();
+		appendFileSync(
+			h.helperSession(CHAT_A),
+			`${JSON.stringify({ type: "model_change", provider: "gone", modelId: "old-1" })}\n`,
+		);
+		await h.rpc(CHAT_B, { id: "m1", type: "get_available_models" });
+		await h.waitForRpc(CHAT_B, (rpc) => rpc.id === "m1", "model list");
+		await h.rpc(CHAT_A, { id: "s1", type: "get_state" });
+		await h.waitForRpc(CHAT_A, (rpc) => rpc.id === "s1", "resumed state");
+		expect(h.chatSpawns(CHAT_A)[1]?.argv).not.toContain("--model");
 	});
 });
 
