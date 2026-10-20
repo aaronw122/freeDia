@@ -5,6 +5,7 @@ import type {
 	HelperToExtension,
 	PiRpcRecord,
 } from "freedia/protocol";
+import { MAX_PAGE_BYTES } from "freedia/protocol";
 import type { TabToWorker, WorkerToTab } from "../lib/messages";
 import {
 	type KeyValueStore,
@@ -124,7 +125,10 @@ export class RealChatClient implements ChatClient {
 		});
 		const model = this.model ?? (await this.loadCurrentModel());
 		const budget = excerptBudgetChars(model?.contextWindow ?? null);
-		if (plan.putFile) {
+		const putFile =
+			plan.putFile &&
+			new TextEncoder().encode(page.markdown).length <= MAX_PAGE_BYTES;
+		if (putFile) {
 			await this.command({
 				type: "page.put",
 				id: this.deps.randomUUID(),
@@ -143,7 +147,7 @@ export class RealChatClient implements ChatClient {
 		await savePageRecord(this.deps.store, chatId, {
 			fingerprint: print,
 			sentAt: this.deps.now(),
-			fileKey: plan.putFile ? this.connectionId : (record?.fileKey ?? ""),
+			fileKey: putFile ? this.connectionId : (record?.fileKey ?? ""),
 		});
 		if (this.chatId === chatId) {
 			this.setQuotes([]);

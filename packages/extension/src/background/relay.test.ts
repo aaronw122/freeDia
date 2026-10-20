@@ -364,10 +364,7 @@ describe("relay", () => {
 		expect(native().disconnected).toBe(true);
 	});
 
-	test("a rejected prompt never starts a run", async () => {
-		const { relay, native } = setup();
-		const tab = await openTab(relay, 1);
-		native().answerHello();
+	function sendPrompt(tab: FakeTab) {
 		tab.send({
 			type: "helper",
 			message: {
@@ -375,6 +372,18 @@ describe("relay", () => {
 				rpc: { type: "prompt", id: "a1", message: "hi" },
 			},
 		});
+	}
+
+	function abortSent(native: FakeNative) {
+		return native.sent.some((m) => "rpc" in m && m.rpc.type === "abort");
+	}
+
+	test("a failed prompt response clears the chat's running flag, even after a status push", async () => {
+		const { relay, native } = setup();
+		const tab = await openTab(relay, 1);
+		native().answerHello();
+		sendPrompt(tab);
+		native().emit({ type: "chat.status", chatId: CHAT_A, state: "starting" });
 		native().emit({
 			chatId: CHAT_A,
 			rpc: {
@@ -382,13 +391,48 @@ describe("relay", () => {
 				type: "response",
 				command: "prompt",
 				success: false,
-				error: "Agent is already processing.",
+				error: "No API key found for anthropic.",
 			},
 		});
 		tab.close();
-		expect(
-			native().sent.some((m) => "rpc" in m && m.rpc.type === "abort"),
-		).toBe(false);
+		expect(abortSent(native())).toBe(false);
+		expect(native().disconnected).toBe(true);
+	});
+
+	test("a helper.error carrying the chatId clears its running flag", async () => {
+		const { relay, native } = setup();
+		const tab = await openTab(relay, 1);
+		native().answerHello();
+		sendPrompt(tab);
+		native().emit({ type: "chat.status", chatId: CHAT_A, state: "starting" });
+		native().emit({
+			type: "helper.error",
+			chatId: CHAT_A,
+			code: "not_signed_in",
+			message: "Not signed in",
+			fix: "Run freedia login",
+		});
+		tab.close();
+		expect(abortSent(native())).toBe(false);
+		expect(native().disconnected).toBe(true);
+	});
+
+	test("a helper spawn_failed after pi accepted the prompt ends the run", async () => {
+		const { relay, native } = setup();
+		const tab = await openTab(relay, 1);
+		native().answerHello();
+		sendPrompt(tab);
+		accepted(native(), CHAT_A, "a1");
+		native().emit({
+			type: "helper.error",
+			id: "a1",
+			chatId: CHAT_A,
+			code: "spawn_failed",
+			message: "pi exited",
+			fix: "Try again",
+		});
+		tab.close();
+		expect(abortSent(native())).toBe(false);
 		expect(native().disconnected).toBe(true);
 	});
 

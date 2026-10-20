@@ -274,6 +274,14 @@ describe("chat client send", () => {
 		});
 	});
 
+	test("a page over the helper's 5 MB cap still sends its excerpt but skips the file", async () => {
+		const { client, worker, setPage } = setup();
+		setPage({ markdown: "word ".repeat(1_100_000) });
+		await client.send("Q");
+		expect(worker.pagePuts()).toBe(0);
+		expect(worker.prompts()[0]).toContain("## Page excerpt\n\nword word");
+	});
+
 	test("an unreadable page sends no excerpt and no file, and emits a page event", async () => {
 		const { client, worker, events, setPage } = setup();
 		setPage({ readability: "unreadable", markdown: "" });

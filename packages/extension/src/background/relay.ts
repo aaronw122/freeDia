@@ -391,6 +391,15 @@ export class Relay {
 		if (message.type === "helper.error" && message.id !== undefined) {
 			this.pendingPrompts.delete(message.id);
 		}
+		if (message.type === "helper.error" && chatId !== undefined) {
+			this.running.delete(chatId);
+			for (const [id, pendingChat] of this.pendingPrompts) {
+				if (pendingChat === chatId) {
+					this.pendingPrompts.delete(id);
+				}
+			}
+			this.closeIfIdle();
+		}
 		if (message.type === "chat.status" && chatId !== undefined) {
 			this.running.add(chatId);
 		}
@@ -424,8 +433,12 @@ export class Relay {
 		if (rpc.type === "response" && rpc.command === "prompt" && id !== null) {
 			const pending = this.pendingPrompts.get(id);
 			this.pendingPrompts.delete(id);
-			if (pending !== undefined && rpc.success === true) {
-				this.running.add(chatId);
+			if (rpc.success === true) {
+				if (pending !== undefined) {
+					this.running.add(chatId);
+				}
+			} else {
+				this.running.delete(chatId);
 			}
 			this.closeIfIdle();
 			return;
