@@ -190,7 +190,7 @@ Spike outcomes are folded into the Contract and the tasks below (2026-10-20). Di
 
 ### Bucket 1 — parallel (3 agents)
 
-- [ ] **1A Helper** (`packages/helper`)
+- [x] **1A Helper** (`packages/helper`)
   - Native messaging framing (stdin/stdout, 4-byte LE length).
   - Router: envelope → pi process for `chatId`; allowlist check; pi stdout lines → envelope back, untouched.
   - Process pool: spawn on demand for a `chatId` on any command (prompt, `get_messages` for a reopened chat, etc.), max `maxConcurrent` (default 3) generating + queue, `chat.status` pushes. Exit each process on `agent_settled`; after an `abort`, forward the `abort` response first, then close stdin. Launch exactly as in the Contract: `--model` = the chat's own model, clean environment, fixed cwd, `FREEDIA_PI_EXTRA_ARGS` test hook. Clean shutdown when the extension disconnects (let in-flight runs finish saving, then exit).
@@ -203,7 +203,7 @@ Spike outcomes are folded into the Contract and the tasks below (2026-10-20). Di
   - Distribution: `bun build --compile` single binary (macOS arm64/x64 first), published to the npm registry and installed with `bunx freedia install`. Users need Bun only to run the installer; the helper binary carries its own Bun, which also runs pi, so the user's Bun version doesn't matter after install.
   - Installer `freedia install`: copies the binary to `~/.freedia/bin/freedia-helper`; writes **one** native host manifest at `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.freedia.helper.json` (creating the folder if Chrome isn't installed) with the absolute binary path and every freeDia extension ID in `allowed_origins`. Dia reads native host manifests only from Chrome's folder, never from its own user-data dir (observed in Dia 1.52.0, `notes/research-dia-detection.md`), so this one file serves both browsers. Installs pi 1.3.0 into `~/.freedia/pi` with `bun add` (pinned as a dependency of the `freedia` package); runs pi sign-in through the helper binary against `~/.freedia/pi-agent`; installs the extension (see Updates); `freedia uninstall`; `freedia doctor`.
   - Tests (fake pi replaying the S1 fixtures in `packages/helper/test/fixtures/pi/`): framing round-trip; allowlist rejects `bash`, every other blocked command and unknown types; launch flags and clean environment (no `*_API_KEY` reaches pi); **a resumed spawn passes the session's own latest model, never another**; routing two chats concurrently without cross-talk; queue when over the limit; process exits on `agent_settled` and the next message respawns and resumes; abort ordering (`agent_settled` → `abort` response → stdin closed); `chat.delete` stops a running chat first; installer writes the manifest to Chrome's folder, creating it when missing (temp HOME).
-- [ ] **1B Extension shell** (`packages/extension`, no chat UI)
+- [x] **1B Extension shell** (`packages/extension`, no chat UI)
   - Manifest: `nativeMessaging`, `storage`; command `open-chat` (`Ctrl+Shift+E` / mac `Command+Shift+E`) as a backup that always works, rebindable at `chrome://extensions/shortcuts`. The service worker forwards `open-chat` to the tab with `tabs.sendMessage`; the content script still has user activation there (S2), which PiP needs. The lazy-loaded UI bundle is a web-accessible resource with `use_dynamic_url`, so pages can't probe for freeDia by its fixed ID.
   - Content script (tiny, all http/https pages): selection capture, the user's chosen shortcut (default **⌘E**; capture-phase `keydown` on `window` at `document_start`, matched on `event.code`, `preventDefault` + `stopImmediatePropagation`), lazy-load the chat UI into a shadow-DOM root on first open.
   - Page context (see Page text): Readability → markdown with `innerText` fallback, fingerprint, excerpt sized to 10% of the model's context window and centered on highlights, `page.put`/`page.clear`, re-send rules (fingerprint change, 30-min quiet, reconnect); URL + title; builds the `prompt` message text.
@@ -212,7 +212,7 @@ Spike outcomes are folded into the Contract and the tasks below (2026-10-20). Di
   - Typed client API for the UI: `send()`, `abort()`, `newChat()`, `addQuote()`, `setModel()`, `listChats()`, `openChat(chatId)`, `deleteChat()`, event subscription.
   - Tests: extraction + fallback, excerpt layout (no highlight, one, several, overlapping, not found, page under budget), re-send rules, prompt text built correctly (first message vs follow-up), chosen shortcut opens the chat and the default is ⌘E, relay routing per tab.
   - Delete `e2e/spike/` once this task is done; its useful checks move into `e2e/specs` with real assertions in 2.3.
-- [ ] **1C Chat UI** (`packages/extension/src/ui`, built against a mock client implementing 1B's API)
+- [x] **1C Chat UI** (`packages/extension/src/ui`, built against a mock client implementing 1B's API)
   - Dia-style floating chat window (strings from `notes/research-dia-ui.md`): header ("+" new chat, history, expand, close; no chat title, no model picker), message list with streaming markdown (react-markdown + code highlighting), composer, stop button.
   - Composer: **model picker in the composer toolbar beside Send**, as in Dia; placeholder "Ask a question about this page", then "Ask another question". Send is disabled while a reply is running (pi rejects a second `prompt` mid-run).
   - Highlights: shown as a composer attachment chip labelled **"Selected Text"**, as in Dia (`DynamicTextSelectionAttachmentDataSource`); re-highlighting adds another chip. Dia's exact chip visuals weren't observed: match them from a screenshot during 1C.
@@ -227,9 +227,9 @@ Spike outcomes are folded into the Contract and the tasks below (2026-10-20). Di
 
 ### Bucket 2 — after Bucket 1
 
-- [ ] **2.1 Integration wiring**: UI uses the real 1B client; end-to-end through helper + pi.
+- [x] **2.1 Integration wiring**: UI uses the real 1B client; end-to-end through helper + pi.
 - [ ] **2.2 PiP float mode (stretch, GO in Chromium; Dia check D pending)**: "Float" opens a Document PiP window only inside a user-gesture handler (button click, ⌘E keydown, or the `open-chat` message) and moves the existing shadow-DOM chat host into it; no new UI instance or port. On PiP `pagehide`, move the host back to the page. Limits (S2): one PiP window across the browser (opening one from another tab closes the first), and it closes when its tab navigates.
-- [ ] **2.3 E2E** (Playwright Chromium, unpacked extension, real helper, pi faux provider via `FREEDIA_PI_EXTRA_ARGS`): ENSURE 1–8, 10–12, 14. Playwright can't press browser-level shortcuts, so ⇧⌘E is tested as registration (`chrome.commands.getAll()`) plus the content-side handler via a service-worker message; ⌘E is tested with `page.keyboard.press("Meta+e")`. ENSURE 13 manual in Dia; ENSURE 9 automatable (button click → `context.waitForEvent("page")`).
+- [x] **2.3 E2E** (Playwright Chromium, unpacked extension, real helper, pi faux provider via `FREEDIA_PI_EXTRA_ARGS`): ENSURE 1–8, 10–12, 14. Playwright can't press browser-level shortcuts, so ⇧⌘E is tested as registration (`chrome.commands.getAll()`) plus the content-side handler via a service-worker message; ⌘E is tested with `page.keyboard.press("Meta+e")`. ENSURE 13 manual in Dia; ENSURE 9 automatable (button click → `context.waitForEvent("page")`). `bun run e2e` (20 specs) and `bun run demo` (walkthrough with screenshots).
 - [ ] **2.4 Docs**: README (install, sign-in, shortcuts, privacy), CHANGELOG.
 
 ## ENSURE → validation

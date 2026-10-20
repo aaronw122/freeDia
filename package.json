@@ -11,7 +11,8 @@
 		"check": "biome check",
 		"typecheck": "bun run --filter '*' typecheck",
 		"build": "bun run --filter './packages/*' build",
-		"e2e": "bun run --cwd e2e test:e2e"
+		"e2e": "bun run --cwd e2e test:e2e",
+		"demo": "bun run --cwd e2e demo"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.15",

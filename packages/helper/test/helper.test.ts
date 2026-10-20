@@ -368,9 +368,8 @@ describe("routing and pool", () => {
 		);
 		const spawns = h.chatSpawns(CHAT_A);
 		expect(spawns).toHaveLength(2);
-		expect(spawns[1]?.argv.slice(spawns[1].argv.indexOf("--model"))[1]).toBe(
-			"faux/faux-1",
-		);
+		const resumed = spawns[1]?.argv ?? [];
+		expect(resumed[resumed.indexOf("--model") + 1]).toBe("faux/faux-1");
 		const recall = h
 			.rpcs(CHAT_A)
 			.filter((rpc) => rpc.type === "message_end")
@@ -639,7 +638,8 @@ describe("chat titles", () => {
 		);
 		expect(String(titlePrompt?.message)).not.toContain("URL:");
 		const namer = h.chatSpawns(CHAT_A)[1];
-		expect(namer?.argv[namer.argv.indexOf("--model") + 1]).toBe("faux/faux-1");
+		const namerArgv = namer?.argv ?? [];
+		expect(namerArgv[namerArgv.indexOf("--model") + 1]).toBe("faux/faux-1");
 		const named = h
 			.fakeLog()
 			.filter((entry) => entry.pid === namer?.pid && entry.event === "stdin");
