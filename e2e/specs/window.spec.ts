@@ -29,7 +29,11 @@ test("ENSURE 8: drag, resize and expand persist across a reload", async ({
 	if (handle === null || moved === null) throw new Error("no resize handle");
 	await mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
 	await mouse.down();
-	await mouse.move(handle.x + 80, handle.y - 60, { steps: 8 });
+	await mouse.move(
+		handle.x + handle.width / 2 + 80,
+		handle.y + handle.height / 2 - 60,
+		{ steps: 8 },
+	);
 	await mouse.up();
 	const resized = await chat.dialog.boundingBox();
 	expect(resized?.width).toBeCloseTo(moved.width + 80, 0);

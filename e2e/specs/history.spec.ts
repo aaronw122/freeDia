@@ -55,7 +55,7 @@ test("ENSURE 7: history survives a browser relaunch; list, reopen and delete mat
 		.getByRole("button", { name: /^Who Rides The Night Train Now/ })
 		.click();
 	await expect(
-		chat.dialog.getByText("Who rides the night train now?"),
+		chat.dialog.getByText("Who rides the night train now?", { exact: true }),
 	).toBeVisible();
 	await expect(chat.assistant).toHaveCount(1);
 	await expect(chat.assistant.first()).toContainText(

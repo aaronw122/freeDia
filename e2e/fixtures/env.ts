@@ -14,7 +14,12 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { type BrowserContext, chromium, type Worker } from "@playwright/test";
+import {
+	type BrowserContext,
+	chromium,
+	type Page,
+	type Worker,
+} from "@playwright/test";
 
 export const REPO = resolve(import.meta.dirname, "..", "..");
 export const EXTENSION_DIR = join(
@@ -176,6 +181,23 @@ export function piProcesses(home: FreediaHome): string[] {
 		);
 }
 
+export function chatProcesses(home: FreediaHome): string[] {
+	return piProcesses(home).filter((line) => line.includes("--session-id "));
+}
+
+export function helperPids(): string[] {
+	const out = execFileSync("ps", ["-axww", "-o", "pid=,command="], {
+		encoding: "utf8",
+	});
+	return out
+		.split("\n")
+		.filter(
+			(line) =>
+				line.includes(HELPER_BINARY) && line.includes("chrome-extension://"),
+		)
+		.map((line) => line.trim().split(/\s+/)[0] ?? "");
+}
+
 export function processEnv(pid: string): string {
 	return execFileSync("ps", ["eww", "-o", "command=", "-p", pid], {
 		encoding: "utf8",
@@ -189,6 +211,8 @@ export interface BrowserOptions {
 export class FreediaBrowser {
 	readonly userDataDir: string;
 	context: BrowserContext | null = null;
+	onboarding: Page | null = null;
+	private launches = 0;
 
 	constructor(
 		readonly home: FreediaHome,
@@ -218,6 +242,8 @@ export class FreediaBrowser {
 	}
 
 	async launch(): Promise<BrowserContext> {
+		const firstRun = this.launches === 0;
+		this.launches++;
 		const context = await chromium.launchPersistentContext(this.userDataDir, {
 			channel: "chromium",
 			headless: true,
@@ -229,6 +255,14 @@ export class FreediaBrowser {
 			],
 		});
 		this.context = context;
+		const isOptions = (page: Page) =>
+			page.url().startsWith(`chrome-extension://${EXTENSION_ID}/options.html`);
+		this.onboarding = null;
+		for (let tries = 0; firstRun && tries < 100; tries++) {
+			this.onboarding = context.pages().find(isOptions) ?? null;
+			if (this.onboarding !== null) break;
+			await sleep(100);
+		}
 		await this.recordTraffic();
 		return context;
 	}

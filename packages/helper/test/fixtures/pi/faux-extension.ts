@@ -100,6 +100,17 @@ const freediaRespond = async (
 				'429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}}',
 		});
 	}
+	if (question.includes("[[env]]")) {
+		const keys = Object.keys(process.env).sort();
+		return fauxAssistantMessage(
+			[
+				`[${modelId}] env keys: ${keys.join(" ")}`,
+				`HOME=${process.env.HOME}`,
+				`PI_CODING_AGENT_DIR=${process.env.PI_CODING_AGENT_DIR}`,
+				`cwd=${process.cwd()}`,
+			].join("\n\n"),
+		);
+	}
 	if (question.includes("[[bash]]")) {
 		return fauxAssistantMessage(
 			[
