@@ -130,16 +130,19 @@ export function ChatApp({ client, store, events }: ChatAppProps) {
 	const running = isRunning(transcript);
 	const chatId = transcript.chatId;
 
-	useEffect(
-		() =>
-			client.subscribe((event) => {
-				dispatch({ type: "client", event });
-				if (event.type === "quotes_changed") setQuotes(event.quotes);
-				if (event.type === "page") setReadability(event.readability);
-				if (event.type === "connection") setConnection(event.state);
-			}),
-		[client],
-	);
+	useEffect(() => {
+		const unsubscribe = client.subscribe((event) => {
+			dispatch({ type: "client", event });
+			if (event.type === "quotes_changed") setQuotes(event.quotes);
+			if (event.type === "page") setReadability(event.readability);
+			if (event.type === "connection") setConnection(event.state);
+		});
+		dispatch({ type: "reset", chatId: client.currentChatId() });
+		setQuotes(client.quotes());
+		setReadability(client.pageReadability());
+		setConnection(client.connection());
+		return unsubscribe;
+	}, [client]);
 
 	useEffect(() => {
 		const onOpen = () => {
