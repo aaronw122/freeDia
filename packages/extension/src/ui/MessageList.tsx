@@ -7,6 +7,8 @@ import {
 	type AssistantTurn,
 	assistantText,
 	type RetryInfo,
+	replyFailure,
+	replyStopped,
 	type TranscriptState,
 } from "./transcript";
 
@@ -22,7 +24,7 @@ function Dots() {
 
 function retryText(retry: RetryInfo | null): string {
 	if (!retry) return "Retrying…";
-	const { title } = replyErrorView(retry.errorMessage, null);
+	const { title } = replyErrorView(retry.errorMessage, retry.provider);
 	return `${title}. Retrying… (attempt ${retry.attempt} of ${retry.maxAttempts})`;
 }
 
@@ -34,6 +36,7 @@ function Progress({ state }: { state: TranscriptState }) {
 		starting: "Starting…",
 		queued: "Waiting for another chat to finish…",
 		thinking: "Thinking…",
+		tool: state.tool,
 		retrying: retryText(state.retry),
 	}[state.phase];
 	if (state.phase === "idle" || state.phase === "streaming") return null;
@@ -57,15 +60,19 @@ function AssistantMessage({
 	streaming: boolean;
 }) {
 	const text = assistantText(turn);
-	if (turn.stopReason === "error") {
-		return (
-			<ErrorCard view={replyErrorView(turn.errorMessage, turn.provider)} />
-		);
-	}
-	const stopped = turn.stopReason === "aborted";
+	const failure = replyFailure(turn);
+	const stopped = replyStopped(turn);
+	if (text.length === 0 && !failure && !stopped) return null;
 	return (
 		<article aria-label="Assistant message" className="group text-neutral-900">
 			{text.length > 0 && <Markdown text={text} />}
+			{failure && (
+				<div className={text.length > 0 ? "mt-3" : ""}>
+					<ErrorCard
+						view={replyErrorView(failure.errorMessage, failure.provider)}
+					/>
+				</div>
+			)}
 			{stopped && (
 				<p className="mt-1 text-xs text-neutral-500 italic">Stopped</p>
 			)}

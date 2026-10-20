@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { fireEvent, waitFor } from "@testing-library/react";
 import type { HelperErrorCode } from "freedia/protocol";
+import { act } from "react";
+import { memoryWindowStore } from "./layout";
 import { promptRun, retextRun, type TimedRecord } from "./mock/fixtures";
-import { fixtureMessages, fixtureReply } from "./mock/mockClient";
+import {
+	fixtureMessages,
+	fixtureReply,
+	MockChatClient,
+} from "./mock/mockClient";
+import { mountChatWithStore } from "./mount";
 import { asRecord } from "./records";
 import { cleanupChats, type Harness, renderChat } from "./test-utils";
 
@@ -535,7 +542,7 @@ describe("errors", () => {
 			);
 			const alert = h.ui.getByRole("alert");
 			expect(alert.textContent).toContain(title);
-			expect(alert.textContent).toContain(fix);
+			expect(alert.textContent).toContain(fix.replaceAll("`", ""));
 			expect(h.ui.queryByRole("status")).toBeNull();
 			expect(h.ui.getByRole("button", { name: "Send" })).toBeTruthy();
 		});
@@ -640,5 +647,252 @@ describe("window", () => {
 		const h = await renderChat();
 		expect(h.root.querySelector("style")?.textContent).toContain("tailwindcss");
 		expect(document.head.querySelectorAll("style").length).toBe(before);
+	});
+});
+
+function rendered(h: Harness): string[] {
+	const list = h.ui
+		.getByRole("dialog", { name: "freeDia chat" })
+		.querySelector(".overflow-y-auto");
+	if (!list) return [];
+	return [...list.children].flatMap((child) => {
+		if (child.getAttribute("role") === "status") return [];
+		const text = child.textContent?.replace(/Copy$/, "").trim() ?? "";
+		return text ? [text] : [];
+	});
+}
+
+function update(event: Record<string, unknown>): TimedRecord {
+	return {
+		t: 0,
+		record: { type: "message_update", assistantMessageEvent: event },
+	};
+}
+
+function message(
+	type: string,
+	role: string,
+	extra: Record<string, unknown> = {},
+) {
+	return { t: 0, record: { type, message: { role, content: [], ...extra } } };
+}
+
+describe("run lifecycle", () => {
+	test("stopping before pi echoes the prompt keeps the chat in order", async () => {
+		const h = await renderChat({
+			statusDelayMs: 1,
+			reply: (question) => ({
+				status: ["starting"],
+				run: retextRun(streamRun, question, `reply to ${question}`, {
+					stepMs: 0,
+				}),
+			}),
+		});
+		await ask(h, "first");
+		expect(h.ui.getByRole("status", { name: "Starting…" })).toBeTruthy();
+		await h.act(() =>
+			fireEvent.click(h.ui.getByRole("button", { name: "Stop" })),
+		);
+		await waitFor(() =>
+			expect(h.ui.getByRole("button", { name: "Send" })).toBeTruthy(),
+		);
+		expect(rendered(h)).toEqual(["first", "Stopped"]);
+
+		await ask(h, "second");
+		await waitFor(() =>
+			expect(h.ui.getAllByRole("button", { name: "Copy" })).toHaveLength(1),
+		);
+		expect(rendered(h)).toEqual([
+			"first",
+			"Stopped",
+			"second",
+			"reply to second",
+		]);
+	});
+
+	test("a successful abort response ends a queued run without agent_settled", async () => {
+		const h = await renderChat();
+		await ask(h, "hello");
+		const chatId = h.client.currentChatId();
+		await h.act(() =>
+			h.client.emit({ type: "status", chatId, state: "queued" }),
+		);
+		expect(h.ui.getByRole("button", { name: "Stop" })).toBeTruthy();
+
+		await h.play([
+			{
+				t: 0,
+				record: { id: "a1", type: "response", command: "abort", success: true },
+			},
+		]);
+		expect(h.ui.queryByRole("status")).toBeNull();
+		expect(h.ui.queryByRole("button", { name: "Stop" })).toBeNull();
+		expect(h.ui.getByRole("button", { name: "Send" })).toBeTruthy();
+		expect(rendered(h)).toEqual(["hello", "Stopped"]);
+	});
+
+	test("after a mid-reply stop, a second prompt streams as a new reply", async () => {
+		const h = await renderChat();
+		await ask(h, "write something");
+		const abortRun = promptRun("abort");
+		await h.play(abortRun);
+		await ask(h, "and now?");
+		await h.play(retextRun(streamRun, "and now?", "Second answer."));
+		const replies = h.ui.getAllByRole("article", { name: "Assistant message" });
+		expect(replies).toHaveLength(2);
+		expect(replies[0]?.textContent).toContain("Stopped");
+		expect(replies[1]?.textContent).toContain("Second answer.");
+		expect(replies[1]?.textContent).not.toContain("Stopped");
+	});
+
+	test("+ mid-reply resets the chat and ignores the old chat's late events", async () => {
+		const h = await renderChat();
+		await ask(h, "hello");
+		const oldChat = h.client.currentChatId();
+		const [beforeEnd, rest] = splitAt(
+			streamRun,
+			(entry) => eventType(entry) === "text_end",
+		);
+		await h.play(beforeEnd);
+		await h.act(() =>
+			fireEvent.click(h.ui.getByRole("button", { name: "New chat" })),
+		);
+		expect(h.ui.queryByRole("article")).toBeNull();
+		expect(h.ui.getByRole("button", { name: "Send" })).toBeTruthy();
+
+		await h.act(() => h.client.play(rest, oldChat));
+		expect(h.ui.queryByRole("article")).toBeNull();
+		expect(h.ui.queryByRole("status")).toBeNull();
+	});
+});
+
+describe("reply content", () => {
+	test("text blocks build by contentIndex; thinking and tool-call blocks are not shown", async () => {
+		const h = await renderChat();
+		await ask(h, "hello");
+		await h.play([
+			{
+				t: 0,
+				record: {
+					id: "r1",
+					type: "response",
+					command: "prompt",
+					success: true,
+				},
+			},
+			message("message_start", "assistant", { provider: "faux" }),
+			update({ type: "text_start", contentIndex: 0 }),
+			update({ type: "text_delta", contentIndex: 0, delta: "Alpha " }),
+			update({ type: "thinking_start", contentIndex: 1 }),
+			update({ type: "thinking_delta", contentIndex: 1, delta: "secret plan" }),
+			update({ type: "toolcall_start", contentIndex: 2, toolName: "read" }),
+			update({ type: "toolcall_delta", contentIndex: 2, delta: '{"path":' }),
+			update({ type: "text_delta", contentIndex: 3, delta: "Omega" }),
+			update({ type: "text_delta", contentIndex: 0, delta: "beta" }),
+		]);
+		const article = h.ui.getByRole("article", { name: "Assistant message" });
+		expect(article.textContent).toBe("Alpha betaOmega");
+	});
+
+	test("a tool loop renders as one reply with a tool status and one Copy", async () => {
+		const h = await renderChat();
+		await ask(h, "list files");
+		const run = promptRun("tools-readonly", 1);
+		const [beforeTool, fromTool] = splitAt(
+			run,
+			(entry) => entry.record.type === "tool_execution_end",
+		);
+		await h.play(beforeTool);
+		expect(h.ui.getByRole("status", { name: "Listing files…" })).toBeTruthy();
+		expect(h.ui.queryByRole("article")).toBeNull();
+
+		await h.play(fromTool);
+		const replies = h.ui.getAllByRole("article", { name: "Assistant message" });
+		expect(replies).toHaveLength(1);
+		expect(h.ui.getAllByRole("button", { name: "Copy" })).toHaveLength(1);
+		expect(replies[0]?.textContent).toContain("pi/");
+	});
+
+	test("Copy on a tool loop copies the text of every step", async () => {
+		const h = await renderChat();
+		await ask(h, "please write a file");
+		const run = promptRun("tools-readonly", 0);
+		const [beforeTool] = splitAt(
+			run,
+			(entry) => entry.record.type === "tool_execution_end",
+		);
+		await h.play(beforeTool);
+		expect(h.ui.getByRole("status", { name: "Using write…" })).toBeTruthy();
+		await h.play(run.slice(beforeTool.length));
+		await h.act(() =>
+			fireEvent.click(h.ui.getByRole("button", { name: "Copy" })),
+		);
+		expect(await navigator.clipboard.readText()).toBe(
+			"Writing the file now.\n\n[faux-1] tool write isError=true: Tool write not found",
+		);
+	});
+
+	test("a reopened tool loop is one reply", async () => {
+		const chatId = crypto.randomUUID();
+		const run = promptRun("tools-readonly", 1);
+		const settled = run.findLast((entry) => entry.record.type === "agent_end");
+		const messages = settled?.record.messages;
+		if (!Array.isArray(messages)) throw new Error("fixture lacks agent_end");
+		const h = await renderChat({
+			chats: [
+				{ chatId, title: "Tools", updatedAt: "2026-10-20T08:00:00.000Z" },
+			],
+			messages: { [chatId]: messages },
+		});
+		await h.act(() =>
+			fireEvent.click(h.ui.getByRole("button", { name: "History" })),
+		);
+		await h.act(async () => fireEvent.click(await h.ui.findByText("Tools")));
+		await waitFor(() =>
+			expect(h.ui.getByText("list files [[read]]")).toBeTruthy(),
+		);
+		expect(
+			h.ui.getAllByRole("article", { name: "Assistant message" }),
+		).toHaveLength(1);
+	});
+
+	test("raw HTML in a reply is not rendered as markup and links carry no stray props", async () => {
+		const h = await renderChat();
+		await h.play(
+			retextRun(
+				streamRun,
+				"html",
+				'<img src="x" onerror="alert(1)"><b>bold?</b> <script>alert(2)</script> [site](https://example.com/)',
+			),
+		);
+		const article = h.ui.getByRole("article", { name: "Assistant message" });
+		expect(article.querySelector("img, b, script")).toBeNull();
+		const link = article.querySelector("a");
+		expect(link?.getAttribute("href")).toBe("https://example.com/");
+		expect(link?.getAttribute("target")).toBe("_blank");
+		expect(link?.hasAttribute("node")).toBe(false);
+	});
+});
+
+describe("mount", () => {
+	test("state that changed before the UI subscribed is picked up", async () => {
+		class LateClient extends MockChatClient {
+			private reads = 0;
+			override connection() {
+				this.reads += 1;
+				return this.reads === 1 ? "connecting" : "helper_missing";
+			}
+		}
+		const host = document.createElement("div");
+		document.body.append(host);
+		const root = host.attachShadow({ mode: "open" });
+		const client = new LateClient();
+		let unmount = () => {};
+		await act(async () => {
+			unmount = mountChatWithStore(root, client, memoryWindowStore());
+		});
+		expect(root.querySelector("[aria-label='Install helper']")).toBeTruthy();
+		act(() => unmount());
+		host.remove();
 	});
 });

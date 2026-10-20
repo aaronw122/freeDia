@@ -71,7 +71,6 @@ export function fixtureReply(name: FixtureName): MockReply {
 
 export class MockChatClient implements ChatClient {
 	readonly calls: MockCall[] = [];
-	sendError: string | null = null;
 	private listeners = new Set<ClientListener>();
 	private timers = new Set<ReturnType<typeof setTimeout>>();
 	private chatId: string;
@@ -85,6 +84,10 @@ export class MockChatClient implements ChatClient {
 	private messages: Record<string, PiRpcRecord[]>;
 	private reply: (question: string) => MockReply | null;
 	private statusDelayMs: number;
+	private stage: "idle" | "waiting" | "running" = "idle";
+	private runCount = 0;
+	private wake: (() => void) | null = null;
+	private firstSubscriber = Promise.withResolvers<void>();
 
 	constructor(options: MockClientOptions = {}) {
 		this.chatId = options.chatId ?? crypto.randomUUID();
@@ -154,26 +157,32 @@ export class MockChatClient implements ChatClient {
 	private delay(ms: number): Promise<void> {
 		const { promise, resolve } = Promise.withResolvers<void>();
 		this.schedule(ms, resolve);
+		this.wake = resolve;
 		return promise;
 	}
 
 	private cancelTimers() {
 		for (const timer of this.timers) clearTimeout(timer);
 		this.timers.clear();
+		this.stage = "idle";
+		this.wake?.();
+		this.wake = null;
 	}
 
 	async send(question: string) {
 		this.calls.push({ method: "send", args: [question] });
-		if (this.sendError !== null) throw new Error(this.sendError);
 		const reply = this.reply(question);
 		if (!reply) {
 			this.setQuotes([]);
 			return;
 		}
 		const chatId = this.chatId;
+		const run = ++this.runCount;
+		this.stage = "waiting";
 		for (const state of reply.status) {
 			this.emit({ type: "status", chatId, state });
 			await this.delay(this.statusDelayMs);
+			if (run !== this.runCount || this.stage !== "waiting") return;
 		}
 		const response = reply.run.find(
 			(entry) => entry.record.type === "response",
@@ -181,32 +190,49 @@ export class MockChatClient implements ChatClient {
 		const start = response?.t ?? 0;
 		if (response) this.emitRpc(response.record, chatId);
 		if (response?.record.success === false) {
+			this.stage = "idle";
 			throw new Error(String(response.record.error));
 		}
-		for (const { t, record } of reply.run) {
-			if (record === response?.record) continue;
-			this.schedule(t - start, () => this.emitRpc(record, chatId));
+		this.stage = "running";
+		const settled = reply.run.findLast(
+			(entry) => entry.record.type === "agent_settled",
+		);
+		for (const entry of reply.run) {
+			if (entry === response) continue;
+			this.schedule(entry.t - start, () => {
+				if (entry === settled) this.stage = "idle";
+				this.emitRpc(entry.record, chatId);
+			});
 		}
 		this.setQuotes([]);
 	}
 
 	async abort() {
 		this.calls.push({ method: "abort", args: [] });
-		const running = this.timers.size > 0;
+		const stage = this.stage;
+		this.stage = "idle";
 		this.cancelTimers();
-		if (!running) return;
-		const end = promptRun("abort").find(
-			(entry) =>
-				entry.record.type === "message_end" &&
-				messageRole(entry.record) === "assistant",
-		);
-		if (end) {
-			this.emitRpc({
-				...end.record,
-				message: { ...asRecord(end.record.message), content: [] },
-			});
+		if (stage === "idle") return;
+		if (stage === "running") {
+			const end = promptRun("abort").find(
+				(entry) =>
+					entry.record.type === "message_end" &&
+					messageRole(entry.record) === "assistant",
+			);
+			if (end) {
+				this.emitRpc({
+					...end.record,
+					message: { ...asRecord(end.record.message), content: [] },
+				});
+			}
+			this.emitRpc({ type: "agent_settled", aborted: true });
 		}
-		this.emitRpc({ type: "agent_settled", aborted: true });
+		this.emitRpc({
+			id: `abort-${this.runCount}`,
+			type: "response",
+			command: "abort",
+			success: true,
+		});
 	}
 
 	private setQuotes(quotes: Quote[]) {
@@ -270,8 +296,13 @@ export class MockChatClient implements ChatClient {
 		}
 	}
 
+	subscribed(): Promise<void> {
+		return this.firstSubscriber.promise;
+	}
+
 	subscribe(listener: ClientListener) {
 		this.listeners.add(listener);
+		this.firstSubscriber.resolve();
 		return () => {
 			this.listeners.delete(listener);
 		};
