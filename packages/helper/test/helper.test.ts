@@ -157,7 +157,7 @@ describe("pi launch", () => {
 		expect(env.FREEDIA_PI_EXTRA_ARGS).toBeUndefined();
 	});
 
-	test("a resumed spawn never passes --model and keeps the chat's set_model choice", async () => {
+	test("a resumed spawn passes the chat's own latest model and keeps its set_model choice", async () => {
 		const h = helper({
 			fake: {
 				scripts: {
@@ -192,9 +192,13 @@ describe("pi launch", () => {
 		);
 		const spawns = h.chatSpawns(CHAT_A);
 		expect(spawns).toHaveLength(3);
-		expect(spawns[0]?.argv).toContain("--model");
-		expect(spawns[1]?.argv).not.toContain("--model");
-		expect(spawns[2]?.argv).not.toContain("--model");
+		const modelOf = (argv: string[] | undefined) => {
+			const at = argv?.indexOf("--model") ?? -1;
+			return at < 0 ? undefined : argv?.[at + 1];
+		};
+		expect(modelOf(spawns[0]?.argv)).toBe("faux/faux-1");
+		expect(modelOf(spawns[1]?.argv)).toBe("faux/faux-1");
+		expect(modelOf(spawns[2]?.argv)).toBe("faux/faux-2");
 		expect(state).toMatchObject({
 			success: true,
 			data: { model: { provider: "faux", id: "faux-2" } },
@@ -364,7 +368,9 @@ describe("routing and pool", () => {
 		);
 		const spawns = h.chatSpawns(CHAT_A);
 		expect(spawns).toHaveLength(2);
-		expect(spawns[1]?.argv).not.toContain("--model");
+		expect(spawns[1]?.argv.slice(spawns[1].argv.indexOf("--model"))[1]).toBe(
+			"faux/faux-1",
+		);
 		const recall = h
 			.rpcs(CHAT_A)
 			.filter((rpc) => rpc.type === "message_end")
@@ -633,7 +639,7 @@ describe("chat titles", () => {
 		);
 		expect(String(titlePrompt?.message)).not.toContain("URL:");
 		const namer = h.chatSpawns(CHAT_A)[1];
-		expect(namer?.argv).not.toContain("--model");
+		expect(namer?.argv[namer.argv.indexOf("--model") + 1]).toBe("faux/faux-1");
 		const named = h
 			.fakeLog()
 			.filter((entry) => entry.pid === namer?.pid && entry.event === "stdin");

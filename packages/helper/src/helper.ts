@@ -654,10 +654,7 @@ export class Helper {
 			this.pendingModels.delete(chatId);
 		}
 		const model = this.launchModel(chatId);
-		const proc = spawnPi(
-			this.pi,
-			chatLaunchArgs(this.pi, chatId, hadSession ? undefined : model),
-		);
+		const proc = spawnPi(this.pi, chatLaunchArgs(this.pi, chatId, model));
 		const chat: ChatProcess = {
 			chatId,
 			proc,
