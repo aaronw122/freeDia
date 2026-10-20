@@ -25,6 +25,8 @@ Decided 2026-10-20:
 - **chatId = lowercase UUID v4** from `crypto.randomUUID()`; it is the pi session ID (see Contract).
 - **No warm pool (plan A).** pi exits after every reply and is respawned per message with `--session-id`. Dia's agent server does the same with the Claude Agent SDK (`--resume` per request; no model process alive while idle). Revisit only if respawn becomes noticeable.
 - **Page text** as in the Page text section: excerpt (10% of context window, 2k–20k tokens, 75/25 or centered on the highlight) kept in the chat; full page as a temporary file. A changed page gets a new excerpt and file; an unchanged page after 30 quiet minutes or a reconnect gets the file only; a new highlight on the same page gets only the window around it.
+- **No Dia detection; onboarding picks the shortcut.** First run offers ⌘E as the default shortcut, or the user picks another; ⇧⌘E always works too. The extension can't see which browser it's in (Dia reports itself as Chrome); the helper can, but it isn't needed. Findings in `notes/research-dia-detection.md`.
+- **Native host manifest:** one file in Chrome's `NativeMessagingHosts` folder; Dia reads it from there.
 
 ## Environment prerequisites
 
@@ -181,16 +183,16 @@ Spike outcomes may amend the contract before Bucket 1 starts.
   - Preflight: pi missing, not signed in → `helper.error` with `fix` text.
   - Self-update: on `helper.hello`, at most once a day, check the npm registry for a newer `freedia`; download the new binary next to the old one, swap it after in-flight chats finish, and keep the protocol backward compatible with the previous extension version. pi version is pinned per helper release and updated with it.
   - Distribution: `bun build --compile` single binary (macOS arm64/x64 first), published to the npm registry and installed with `bunx freedia install`. Users need Bun only to run the installer; the helper binary carries its own Bun, which also runs pi, so the user's Bun version doesn't matter after install.
-  - Installer `freedia install`: copies the binary to `~/.freedia/bin/freedia-helper`; writes the native host manifest for Chrome and Dia (`~/Library/Application Support/<browser>/NativeMessagingHosts/com.freedia.helper.json`) with the absolute binary path and extension ID(s); installs pi into `~/.freedia/pi` with `bun add` (pi pinned as a dependency of the `freedia` package; if the `bun add` 404 on `@aws-sdk/credential-provider-http` persists, vendor pi's `dist/bundle` into the package instead); runs pi sign-in through the helper binary against `~/.freedia/pi-agent`; installs the extension (see Updates); `freedia uninstall`; `freedia doctor`.
-  - Tests: framing round-trip; allowlist rejects `bash` and unknown commands; routing two chats concurrently without cross-talk; queue when over the limit; process exits after a run and the next message respawns and resumes (with a fake pi binary emitting recorded S1 fixtures); installer manifest paths (temp HOME).
+  - Installer `freedia install`: copies the binary to `~/.freedia/bin/freedia-helper`; writes **one** native host manifest at `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.freedia.helper.json` (creating the folder if Chrome isn't installed) with the absolute binary path and every freeDia extension ID in `allowed_origins`. Dia reads native host manifests only from Chrome's folder, never from its own user-data dir (observed in Dia 1.52.0, `notes/research-dia-detection.md`), so this one file serves both browsers. Installs pi into `~/.freedia/pi` with `bun add` (pi pinned as a dependency of the `freedia` package; if the `bun add` 404 on `@aws-sdk/credential-provider-http` persists, vendor pi's `dist/bundle` into the package instead); runs pi sign-in through the helper binary against `~/.freedia/pi-agent`; installs the extension (see Updates); `freedia uninstall`; `freedia doctor`.
+  - Tests: framing round-trip; allowlist rejects `bash` and unknown commands; routing two chats concurrently without cross-talk; queue when over the limit; process exits after a run and the next message respawns and resumes (with a fake pi binary emitting recorded S1 fixtures); installer writes the manifest to Chrome's folder, creating it when missing (temp HOME).
 - [ ] **1B Extension shell** (`packages/extension`, no chat UI)
-  - Manifest: `nativeMessaging`, `storage`, `scripting`, `activeTab`; command `open-chat` (`Ctrl+Shift+E` / mac `Command+Shift+E`).
-  - Content script (tiny, all http/https pages): selection capture, Cmd+E handler when Dia mode is on, lazy-load the chat UI into a shadow-DOM root on first open.
+  - Manifest: `nativeMessaging`, `storage`, `scripting`, `activeTab`; command `open-chat` (`Ctrl+Shift+E` / mac `Command+Shift+E`) as a backup that always works, rebindable at `chrome://extensions/shortcuts`.
+  - Content script (tiny, all http/https pages): selection capture, the user's chosen shortcut (default **⌘E**; capture-phase `keydown` on `window` at `document_start`, matched on `event.code`, `preventDefault` + `stopImmediatePropagation`), lazy-load the chat UI into a shadow-DOM root on first open.
   - Page context (see Page text): Readability → markdown with `innerText` fallback, fingerprint, excerpt sized to 10% of the model's context window and centered on highlights, `page.put`/`page.clear`, re-send rules (fingerprint change, 30-min quiet, reconnect); URL + title; builds the `prompt` message text.
   - Service worker: native port lifecycle and reconnect, `helper.hello` with the concurrency setting, relay between tab ports and the helper by `chatId`, `helper_missing` detection, new `chatId` generation, tab → chatId map in `chrome.storage.local`.
-  - Settings + first run: "Using Dia?" toggle, shortcut display/link to `chrome://extensions/shortcuts`, max concurrent chats.
+  - Onboarding + settings: **no browser detection and no "Using Dia?" question.** First run shows a shortcut picker, default **⌘E**: keep it or press another combination. Changeable later in settings. Onboarding notes that Dia uses ⌘E for its own chat ("turn it off in Dia → Settings → Shortcuts, or pick another shortcut here") and that ⇧⌘E always works too. Settings also hold max concurrent chats.
   - Typed client API for the UI: `send()`, `abort()`, `newChat()`, `addQuote()`, `setModel()`, `listChats()`, `openChat(chatId)`, `deleteChat()`, event subscription.
-  - Tests: extraction + fallback, excerpt layout (no highlight, one, several, overlapping, not found, page under budget), re-send rules, prompt text built correctly (first message vs follow-up), relay routing per tab.
+  - Tests: extraction + fallback, excerpt layout (no highlight, one, several, overlapping, not found, page under budget), re-send rules, prompt text built correctly (first message vs follow-up), chosen shortcut opens the chat and the default is ⌘E, relay routing per tab.
 - [ ] **1C Chat UI** (`packages/extension/src/ui`, built against a mock client implementing 1B's API)
   - Dia-style floating chat window (strings from `notes/research-dia-ui.md`): header ("+" new chat, history, expand, close; no chat title, no model picker), message list with streaming markdown (react-markdown + code highlighting), composer, stop button.
   - Composer: **model picker in the composer toolbar beside Send**, as in Dia; placeholder "Ask a question about this page", then "Ask another question". Send is disabled while a reply is running (pi rejects a second `prompt` mid-run).
@@ -226,15 +228,15 @@ Spike outcomes may amend the contract before Bucket 1 starts.
 | 10 | Actionable errors | Helper unit tests per `helper.error` code; UI tests mapping pi error events to fix text; E2E for `helper_missing` |
 | 11 | Read-only agent; previous chats only on ask | S1 verification + helper test that `bash` is blocked and launch flags are set |
 | 12 | Chat per tab | E2E: two tabs, separate chats |
-| 13 | Shortcuts Chrome/Dia, rebindable | Manual in Dia; manifest assertion for Chrome default |
+| 13 | Shortcut ⌘E by default, user-changeable at onboarding and in settings; ⇧⌘E backup | E2E: `Meta+e` opens the chat; a changed shortcut opens it and ⌘E no longer does; manifest assertion for ⇧⌘E. Manual in Dia: ⌘E reaches freeDia once Dia's own ⌘E is turned off |
 | 14 | Multiple chats at once; stop; resume later | E2E: two tabs streaming at once; abort one; after a run its process has exited; next message resumes with context |
 
 ## Risks
 
 - **pi RPC details** (event shapes, abort partials, session naming) → S1 first.
 - **pi's protocol is the extension's protocol** → a pi release could change events. pi is pinned per helper release; the helper self-updates, and a version check in `helper.hello` catches skew.
-- **Dia's own Cmd+Shift+E** opens Dia's sidebar `[INFERENCE: from a third-party review]`, which may clash with freeDia's Chrome default in Dia. In Dia, freeDia uses Cmd+E; S2 checks whether the manifest's Cmd+Shift+E also needs to be unbound there.
-- **Dia's Cmd+E may win** over the content script → S2; fallback: user disables Dia's shortcut or uses Cmd+Shift+E.
+- **⌘E clashes in both browsers.** Dia: ⌘E opens Dia's own chat and may win over the content script (manual check B); onboarding tells the user to turn Dia's off or pick another shortcut. Chrome: ⌘E is "Use Selection for Find"; whether the content script's `preventDefault` stops it is unverified, so check in 1B. Either way ⇧⌘E still works.
+- **Shortcut needs a content script**, so it doesn't work on pages where content scripts can't run (`chrome://`, the Web Store, the PDF viewer). freeDia can't read those pages anyway (Page text step 8).
 - **PiP from extension** may not work → stretch only.
 - **Native messaging on macOS**: Chrome launches the host with a minimal PATH → manifest points to the absolute binary path; pi path resolved at install time.
 - **Helper lifetime**: Chrome closes the helper's stdin when the service worker's port drops → in-flight replies could be cut. Service worker keeps the port open while any chat is running; helper finishes in-flight runs before exiting.
