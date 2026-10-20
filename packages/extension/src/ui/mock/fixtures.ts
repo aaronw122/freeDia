@@ -3,8 +3,8 @@ import abortText from "../../../../helper/test/fixtures/pi/abort.jsonl?raw";
 import notSignedInText from "../../../../helper/test/fixtures/pi/not-signed-in-anthropic.jsonl?raw";
 import rejectedText from "../../../../helper/test/fixtures/pi/provider-rejected-401.jsonl?raw";
 import rateLimitText from "../../../../helper/test/fixtures/pi/rate-limit.jsonl?raw";
-import setModelText from "../../../../helper/test/fixtures/pi/set-model.jsonl?raw";
 import streamText from "../../../../helper/test/fixtures/pi/stream.jsonl?raw";
+import toolsText from "../../../../helper/test/fixtures/pi/tools-readonly.jsonl?raw";
 import { asRecord, messageRole, type UnknownRecord } from "../records";
 
 export interface FixtureLine {
@@ -19,7 +19,7 @@ export type FixtureName =
 	| "not-signed-in-anthropic"
 	| "provider-rejected-401"
 	| "rate-limit"
-	| "set-model";
+	| "tools-readonly";
 
 const FIXTURE_TEXT: Record<FixtureName, string> = {
 	stream: streamText,
@@ -27,7 +27,7 @@ const FIXTURE_TEXT: Record<FixtureName, string> = {
 	"not-signed-in-anthropic": notSignedInText,
 	"provider-rejected-401": rejectedText,
 	"rate-limit": rateLimitText,
-	"set-model": setModelText,
+	"tools-readonly": toolsText,
 };
 
 function parseLine(text: string): FixtureLine {
