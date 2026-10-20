@@ -14,6 +14,7 @@ test("ENSURE 7: history survives a browser relaunch; list, reopen and delete mat
 	await chat.open();
 	await chat.ask("Who rides the night train now?");
 	await chat.button("New chat").click();
+	await expect(chat.assistant).toHaveCount(0);
 	await chat.ask("What does a sleeper car cost to build?");
 	const [first, second] = chatIds(home).sort(
 		(a, b) =>
