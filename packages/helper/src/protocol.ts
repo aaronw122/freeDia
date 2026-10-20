@@ -112,6 +112,19 @@ export interface HelperError {
 	fix: string;
 }
 
+export interface HelperChunk {
+	type: "helper.chunk";
+	chatId?: string;
+	chunkId: string;
+	index: number;
+	count: number;
+	data: string;
+}
+
+export const MAX_HOST_MESSAGE_BYTES = 1024 * 1024;
+
+export const CHUNK_SLICE_BYTES = 700_000;
+
 export type HelperCommand =
 	| HelperHelloRequest
 	| ChatListRequest
@@ -126,7 +139,7 @@ export type HelperReply =
 	| PagePutResponse
 	| PageClearResponse;
 
-export type HelperPush = ChatStatus | HelperError;
+export type HelperPush = ChatStatus | HelperError | HelperChunk;
 
 export type ExtensionToHelper = Envelope<ForwardedRpc> | HelperCommand;
 
@@ -191,5 +204,22 @@ export function isChatStatus(value: unknown): value is ChatStatus {
 		value.type === "chat.status" &&
 		isChatId(value.chatId) &&
 		(value.state === "starting" || value.state === "queued")
+	);
+}
+
+export function isHelperChunk(value: unknown): value is HelperChunk {
+	return (
+		isRecord(value) &&
+		value.type === "helper.chunk" &&
+		(value.chatId === undefined || isChatId(value.chatId)) &&
+		typeof value.chunkId === "string" &&
+		typeof value.index === "number" &&
+		Number.isInteger(value.index) &&
+		typeof value.count === "number" &&
+		Number.isInteger(value.count) &&
+		value.count > 0 &&
+		value.index >= 0 &&
+		value.index < value.count &&
+		typeof value.data === "string"
 	);
 }
