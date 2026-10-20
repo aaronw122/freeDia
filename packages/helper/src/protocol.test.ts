@@ -6,6 +6,7 @@ import {
 	isEnvelope,
 	isForwardedRpc,
 	isForwardedRpcType,
+	isHelperChunk,
 	isHelperCommand,
 } from "./protocol";
 
@@ -165,5 +166,35 @@ describe("helper wire format", () => {
 		],
 	] as const)("rejects %s", (_name, guard, value) => {
 		expect(guard(value)).toBe(false);
+	});
+});
+
+describe("helper.chunk wire format", () => {
+	const json = `{"type":"helper.chunk","chatId":"${CHAT_ID}","chunkId":"0b7c0c55-6a43-4c1e-9d0f-5b0a3c2e1f00","index":0,"count":3,"data":"eyJjaGF0SWQiOi"}`;
+
+	test("accepts exact JSON, with or without chatId", () => {
+		const chunk = JSON.parse(json);
+		expect(isHelperChunk(chunk)).toBe(true);
+		const { chatId: _chatId, ...withoutChat } = chunk;
+		expect(isHelperChunk(withoutChat)).toBe(true);
+	});
+
+	test.each(["type", "chunkId", "index", "count", "data"])(
+		"rejects JSON without %s",
+		(field) => {
+			const { [field]: _dropped, ...rest } = JSON.parse(json);
+			expect(isHelperChunk(rest)).toBe(false);
+		},
+	);
+
+	test.each([
+		["index past count", { index: 3 }],
+		["negative index", { index: -1 }],
+		["zero count", { count: 0, index: 0 }],
+		["fractional index", { index: 0.5 }],
+		["bad chatId", { chatId: "../../x" }],
+		["non-string data", { data: 7 }],
+	])("rejects %s", (_name, patch) => {
+		expect(isHelperChunk({ ...JSON.parse(json), ...patch })).toBe(false);
 	});
 });

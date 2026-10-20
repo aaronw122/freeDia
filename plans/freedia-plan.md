@@ -73,6 +73,7 @@ Requests from the extension carry a string `id`; the helper echoes it on the rep
 | `helper.error` (helper → ext)      | `{ id?, chatId?, code, message, fix }`; `id` set when it answers a request | `pi_missing`, `not_signed_in`, `spawn_failed`. Provider errors (rejected, rate limited) arrive as pi's own error events, untouched. |
 | `page.put`                         | `{ id, chatId, markdown }` → `{ id, chatId }`                           | Write/replace the chat's temporary full-page file (see Page text) |
 | `page.clear`                       | `{ id, chatId }` → `{ id, chatId }`                                     | Delete it (new chat, tab closed). `chat.delete` also deletes it |
+| `helper.chunk` (helper → ext)      | `{ chatId?, chunkId, index, count, data }`; `data` is base64 of a ≤ 700,000-byte slice | Any helper → extension message over 1 MB (e.g. `get_messages` on a long chat) is sent as ordered chunks of its UTF-8 JSON bytes; the extension concatenates the decoded bytes, parses them and handles the result as the original message. `chatId` is copied from the original when it has one |
 
 Exact JSON for each is pinned in `packages/helper/src/protocol.test.ts`.
 
