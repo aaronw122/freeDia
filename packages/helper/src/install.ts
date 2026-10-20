@@ -115,6 +115,12 @@ export async function bunAddPi(
 	if (code !== 0) {
 		throw new Error(`bun add exited with code ${code}`);
 	}
+	const installed = piVersion(paths);
+	if (installed !== version) {
+		throw new Error(
+			`bun add finished but pi's package.json reports ${installed || "nothing"}, expected ${version}`,
+		);
+	}
 }
 
 export async function piSignIn(pi: PiConfig): Promise<void> {
