@@ -11,7 +11,7 @@ import {
 	CHECK_INTERVAL_MS,
 	compareVersions,
 	type Fetch,
-	isRegistryTarball,
+	registryTarball,
 	SelfUpdater,
 } from "../src/update";
 import { CHAT_A, TestHelper, tempHome } from "./harness";
@@ -19,6 +19,7 @@ import { CHAT_A, TestHelper, tempHome } from "./harness";
 const LATEST = "https://registry.npmjs.org/freedia/latest";
 const TARBALL = "https://registry.npmjs.org/freedia/-/freedia-1.2.0.tgz";
 const ENTRY = "package/dist/freedia-helper-darwin-arm64";
+const NEW_BINARY = "#!/bin/sh\necho 1.2.0\n";
 const homes: string[] = [];
 
 afterEach(() => {
@@ -44,7 +45,7 @@ async function setup(
 	const binaryPath = join(home, "freedia-helper");
 	writeFileSync(binaryPath, "old binary");
 	const tarball = await new Bun.Archive(
-		options.files ?? { [ENTRY]: "new arm64 binary" },
+		options.files ?? { [ENTRY]: NEW_BINARY },
 		{ compress: "gzip" },
 	).bytes();
 	const tarballUrl = options.tarballUrl ?? TARBALL;
@@ -108,8 +109,8 @@ describe("self-update", () => {
 		expect(compareVersions("0.9.0", "1.0.0")).toBe(-1);
 	});
 
-	test("accepts only https tarballs of freedia on registry.npmjs.org", () => {
-		expect(isRegistryTarball(TARBALL)).toBe(true);
+	test("accepts only https://registry.npmjs.org/freedia/-/freedia-<version>.tgz", () => {
+		expect(registryTarball(TARBALL, "1.2.0")?.href).toBe(TARBALL);
 		for (const url of [
 			"http://registry.npmjs.org/freedia/-/freedia-1.2.0.tgz",
 			"https://evil.example/freedia/-/freedia-1.2.0.tgz",
@@ -117,30 +118,70 @@ describe("self-update", () => {
 			"https://user@registry.npmjs.org/freedia/-/freedia-1.2.0.tgz",
 			"https://registry.npmjs.org/other/-/other-1.2.0.tgz",
 			"https://registry.npmjs.org:8443/freedia/-/freedia-1.2.0.tgz",
+			"https://registry.npmjs.org/freedia/-/freedia-1.1.9.tgz",
+			"https://registry.npmjs.org/freedia/-/freedia-1.2.0.tgz?x=1",
+			"https://registry.npmjs.org/freedia/-/../../evil/-/evil-1.0.0.tgz",
+			"https://registry.npmjs.org/freedia/-/%2e%2e/%2e%2e/evil/-/evil-1.0.0.tgz",
+			"https://registry.npmjs.org/freedia/-/%2e%2e/freedia/-/freedia-1.2.0.tgz",
 			"not a url",
 		]) {
-			expect(isRegistryTarball(url)).toBe(false);
+			expect(registryTarball(url, "1.2.0")).toBeUndefined();
 		}
+		expect(registryTarball(TARBALL, "1.2.0/../x")).toBeUndefined();
 	});
+
+	test.each([
+		[
+			"a traversal path",
+			"https://registry.npmjs.org/freedia/-/../../evil/-/evil-1.0.0.tgz",
+		],
+		[
+			"an encoded traversal path",
+			"https://registry.npmjs.org/freedia/-/%2e%2e/%2e%2e/evil/-/evil-1.0.0.tgz",
+		],
+	])("rejects %s without downloading", async (_name, url) => {
+		const s = await setup({ tarballUrl: url });
+		await s.updater.maybeCheck();
+		expect(s.requests).toEqual([LATEST]);
+		expectUntouched(s);
+	});
+
+	test("a staged binary reporting the wrong version is deleted and never swapped in", async () => {
+		const s = await setup({ files: { [ENTRY]: "#!/bin/sh\necho 9.9.9\n" } });
+		await s.updater.maybeCheck();
+		expect(s.updater.stagedVersion).toBe("1.2.0");
+		expect(s.updater.applyIfReady()).toBe(false);
+		expectUntouched(s);
+		expect(s.logs.at(-1)).toContain("reports 9.9.9");
+		expect(existsSync(`${s.binaryPath}.prev`)).toBe(false);
+	});
+
+	test("a staged binary that hangs is killed by the timeout and not swapped in", async () => {
+		const s = await setup({ files: { [ENTRY]: "#!/bin/sh\nsleep 30\n" } });
+		await s.updater.maybeCheck();
+		const started = Date.now();
+		expect(s.updater.applyIfReady()).toBe(false);
+		expectUntouched(s);
+		expect(Date.now() - started).toBeLessThan(10_000);
+	}, 15_000);
 
 	test("downloads, verifies and stages the platform binary, then swaps it on apply", async () => {
 		const s = await setup({
 			files: {
-				[ENTRY]: "new arm64 binary",
+				[ENTRY]: NEW_BINARY,
 				"package/dist/freedia-helper-darwin-x64": "new x64 binary",
 			},
 		});
 		await s.updater.maybeCheck();
 		expect(s.requests).toEqual([LATEST, TARBALL]);
 		expect(readFileSync(s.binaryPath, "utf8")).toBe("old binary");
-		expect(readFileSync(`${s.binaryPath}.next`, "utf8")).toBe(
-			"new arm64 binary",
-		);
+		expect(readFileSync(`${s.binaryPath}.next`, "utf8")).toBe(NEW_BINARY);
 		expect(statSync(`${s.binaryPath}.next`).mode & 0o777).toBe(0o755);
 		expect(s.updater.stagedVersion).toBe("1.2.0");
 		expect(s.updater.applyIfReady()).toBe(true);
-		expect(readFileSync(s.binaryPath, "utf8")).toBe("new arm64 binary");
+		expect(readFileSync(s.binaryPath, "utf8")).toBe(NEW_BINARY);
 		expect(existsSync(`${s.binaryPath}.next`)).toBe(false);
+		expect(readFileSync(`${s.binaryPath}.prev`, "utf8")).toBe("old binary");
 	});
 
 	test.each([
@@ -177,7 +218,7 @@ describe("self-update", () => {
 		["an absolute entry", "/tmp/freedia-helper"],
 	])("rejects an archive with %s", async (_name, entry) => {
 		const s = await setup({
-			files: { [ENTRY]: "new arm64 binary", [entry]: "evil" },
+			files: { [ENTRY]: NEW_BINARY, [entry]: "evil" },
 		});
 		await s.updater.maybeCheck();
 		expect(s.logs.at(-1)).toContain("rejected archive entry");
@@ -235,7 +276,7 @@ describe("self-update", () => {
 		expect(readFileSync(s.binaryPath, "utf8")).toBe("old binary");
 		await h.rpc(CHAT_A, { id: "r2", type: "abort" });
 		await h.waitFor(() => syncCalls.length === 1, "pi sync after swap");
-		expect(readFileSync(s.binaryPath, "utf8")).toBe("new arm64 binary");
+		expect(readFileSync(s.binaryPath, "utf8")).toBe(NEW_BINARY);
 		const next = h.rpc(CHAT_A, { id: "g1", type: "get_messages" });
 		expect(h.chatSpawns(CHAT_A)).toHaveLength(1);
 		release();

@@ -12,7 +12,6 @@ import type { Updater } from "./helper";
 
 export const REGISTRY_URL = "https://registry.npmjs.org";
 export const PACKAGE_NAME = "freedia";
-export const TARBALL_PREFIX = `${REGISTRY_URL}/${PACKAGE_NAME}/-/`;
 export const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export type Fetch = (url: string) => Promise<Response>;
@@ -49,19 +48,43 @@ export function binaryEntry(platform: string, arch: string): string {
 	return `package/dist/freedia-helper-${platform}-${arch}`;
 }
 
-export function isRegistryTarball(url: string): boolean {
+const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+export function registryTarball(url: string, version: string): URL | undefined {
+	if (!VERSION_PATTERN.test(version)) {
+		return undefined;
+	}
 	try {
 		const parsed = new URL(url);
-		return (
+		const expected = `/${PACKAGE_NAME}/-/${PACKAGE_NAME}-${version}.tgz`;
+		const ok =
 			parsed.protocol === "https:" &&
 			parsed.host === "registry.npmjs.org" &&
 			parsed.username === "" &&
 			parsed.password === "" &&
-			url.startsWith(TARBALL_PREFIX) &&
-			!parsed.pathname.split("/").includes("..")
-		);
+			parsed.search === "" &&
+			parsed.hash === "" &&
+			parsed.pathname === expected;
+		return ok ? parsed : undefined;
 	} catch {
-		return false;
+		return undefined;
+	}
+}
+
+export const VERSION_CHECK_TIMEOUT_MS = 5000;
+
+export function reportedVersion(binary: string): string | undefined {
+	try {
+		const result = Bun.spawnSync([binary, "version"], {
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+			timeout: VERSION_CHECK_TIMEOUT_MS,
+			env: { PATH: "/usr/bin:/bin" },
+		});
+		return result.exitCode === 0 ? result.stdout.toString().trim() : undefined;
+	} catch {
+		return undefined;
 	}
 }
 
@@ -120,13 +143,37 @@ export class SelfUpdater implements Updater {
 		return this.checking;
 	}
 
+	get prevPath(): string {
+		return `${this.options.binaryPath}.prev`;
+	}
+
 	applyIfReady(): boolean {
-		if (this.staged === undefined || !existsSync(this.nextPath)) {
+		const version = this.staged;
+		if (version === undefined || !existsSync(this.nextPath)) {
 			return false;
 		}
-		renameSync(this.nextPath, this.options.binaryPath);
-		this.log(`updated helper to ${this.staged}`);
 		this.staged = undefined;
+		const reported = reportedVersion(this.nextPath);
+		if (reported !== version) {
+			this.log(
+				`update ${version}: staged binary reports ${reported ?? "nothing"}; keeping the current helper`,
+			);
+			rmSync(this.nextPath, { force: true });
+			return false;
+		}
+		rmSync(this.prevPath, { force: true });
+		renameSync(this.options.binaryPath, this.prevPath);
+		try {
+			renameSync(this.nextPath, this.options.binaryPath);
+		} catch (error) {
+			renameSync(this.prevPath, this.options.binaryPath);
+			rmSync(this.nextPath, { force: true });
+			this.log(
+				`update ${version}: swap failed (${error}); kept the current helper`,
+			);
+			return false;
+		}
+		this.log(`updated helper to ${version}; previous kept at ${this.prevPath}`);
 		return true;
 	}
 
@@ -167,7 +214,11 @@ export class SelfUpdater implements Updater {
 		) {
 			return;
 		}
-		if (typeof tarball !== "string" || !isRegistryTarball(tarball)) {
+		const tarballUrl =
+			typeof tarball === "string"
+				? registryTarball(tarball, version)
+				: undefined;
+		if (tarballUrl === undefined) {
 			this.log(`update ${version}: rejected tarball URL ${String(tarball)}`);
 			return;
 		}
@@ -175,7 +226,7 @@ export class SelfUpdater implements Updater {
 			this.log(`update ${version}: no integrity in the registry manifest`);
 			return;
 		}
-		const download = await this.fetch(tarball);
+		const download = await this.fetch(tarballUrl.href);
 		if (!download.ok) {
 			this.log(`update download: ${download.status}`);
 			return;
