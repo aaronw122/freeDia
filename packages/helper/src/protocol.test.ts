@@ -9,6 +9,8 @@ import {
 	isHelperCommand,
 } from "./protocol";
 
+const CHAT_ID = "3f2a9c1e-8b4d-4e6f-a0b1-c2d3e4f5a6b7";
+
 describe("forwarded RPC allowlist", () => {
 	test.each([...FORWARDED_RPC_TYPES])("accepts %s", (type) => {
 		expect(isForwardedRpcType(type)).toBe(true);
@@ -42,41 +44,38 @@ describe("envelope guard", () => {
 	const rpc = { id: "r1", type: "prompt", message: "hi" };
 
 	test("accepts an envelope with chatId and rpc", () => {
-		expect(isEnvelope({ chatId: "c-01J", rpc })).toBe(true);
+		expect(isEnvelope({ chatId: CHAT_ID, rpc })).toBe(true);
 	});
 
 	test.each([
 		{ rpc },
 		{ chatId: 7, rpc },
 		{ chatId: "../../x", rpc },
-		{ chatId: "c-01J" },
-		{ chatId: "c-01J", rpc: { id: "r1" } },
-		{ chatId: "c-01J", rpc: "prompt" },
+		{ chatId: CHAT_ID },
+		{ chatId: CHAT_ID, rpc: { id: "r1" } },
+		{ chatId: CHAT_ID, rpc: "prompt" },
 	])("rejects %p", (value) => {
 		expect(isEnvelope(value)).toBe(false);
 	});
 });
 
 describe("chatId validator", () => {
-	test.each([
-		"c-01JABCDEF0123456789XYZWVUT",
-		"01JABCDEF0123456789XYZWVUT",
-		"a",
-		"A".repeat(128),
-	])("accepts %p", (chatId) => {
-		expect(isChatId(chatId)).toBe(true);
+	test("accepts a crypto.randomUUID() value", () => {
+		expect(isChatId(crypto.randomUUID())).toBe(true);
 	});
 
 	test.each([
 		"../../x",
 		"--tools=bash",
-		"-c01J",
-		"a/b",
-		"c_01J",
-		"c 01J",
-		"c.01J",
+		`-${CHAT_ID.slice(1)}`,
+		CHAT_ID.toUpperCase(),
+		CHAT_ID.slice(0, -1),
+		`${CHAT_ID}0`,
+		`${CHAT_ID}\n`,
+		"0192f3a1-7c2e-7b8d-9e4f-1a2b3c4d5e6f",
+		"0192f3a1-7c2e-4b8d-7e4f-1a2b3c4d5e6f",
+		"0192f3a17c2e4b8d9e4f1a2b3c4d5e6f",
 		"",
-		"A".repeat(129),
 	])("rejects %p", (chatId) => {
 		expect(isChatId(chatId)).toBe(false);
 	});
@@ -98,12 +97,12 @@ describe("helper wire format", () => {
 		[
 			"chat.delete",
 			isHelperCommand,
-			'{"type":"chat.delete","id":"h3","chatId":"c-01J"}',
+			`{"type":"chat.delete","id":"h3","chatId":"${CHAT_ID}"}`,
 		],
 		[
 			"chat.status",
 			isChatStatus,
-			'{"type":"chat.status","chatId":"c-01J","state":"queued"}',
+			`{"type":"chat.status","chatId":"${CHAT_ID}","state":"queued"}`,
 		],
 	] as const;
 
@@ -142,7 +141,7 @@ describe("helper wire format", () => {
 		[
 			"chat.status unknown state",
 			isChatStatus,
-			{ type: "chat.status", chatId: "c-01J", state: "done" },
+			{ type: "chat.status", chatId: CHAT_ID, state: "done" },
 		],
 	] as const)("rejects %s", (_name, guard, value) => {
 		expect(guard(value)).toBe(false);
