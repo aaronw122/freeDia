@@ -1,8 +1,8 @@
 import type {
 	ChatSummary,
 	ExtensionToHelper,
-	HelperToExtension,
 	ForwardedRpcType,
+	HelperToExtension,
 	PiRpcRecord,
 } from "freedia/protocol";
 import type { TabToWorker, WorkerToTab } from "../lib/messages";
@@ -214,7 +214,11 @@ export class RealChatClient implements ChatClient {
 
 	async deleteChat(chatId: string): Promise<void> {
 		await this.ready;
-		await this.command({ type: "chat.delete", id: this.deps.randomUUID(), chatId });
+		await this.command({
+			type: "chat.delete",
+			id: this.deps.randomUUID(),
+			chatId,
+		});
 		if (chatId === this.chatId) {
 			await this.newChat();
 		}
@@ -287,7 +291,11 @@ export class RealChatClient implements ChatClient {
 		}
 		switch (message.type) {
 			case "chat.status":
-				this.emit({ type: "status", chatId: message.chatId, state: message.state });
+				this.emit({
+					type: "status",
+					chatId: message.chatId,
+					state: message.state,
+				});
 				return;
 			case "helper.error":
 				if (message.id !== undefined) {

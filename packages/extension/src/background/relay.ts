@@ -291,7 +291,10 @@ export class Relay {
 		this.retryPending = true;
 		const delay = missing
 			? MISSING_RETRY_MS
-			: Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** (this.failures - 1));
+			: Math.min(
+					RECONNECT_MAX_MS,
+					RECONNECT_BASE_MS * 2 ** (this.failures - 1),
+				);
 		this.deps.setTimer(() => {
 			this.retryPending = false;
 			if (this.native === null && this.tabs.size > 0) {
@@ -322,7 +325,9 @@ export class Relay {
 		if (isEnvelope(message)) {
 			this.trackRun(message.chatId, message.rpc);
 			const owner =
-				message.rpc.type === "response" ? this.takeOwner(message.rpc.id) : undefined;
+				message.rpc.type === "response"
+					? this.takeOwner(message.rpc.id)
+					: undefined;
 			this.deliver(message, message.chatId, owner);
 			return;
 		}
@@ -361,7 +366,9 @@ export class Relay {
 
 	private trackRun(chatId: string, rpc: Record<string, unknown>): void {
 		const failedPrompt =
-			rpc.type === "response" && rpc.command === "prompt" && rpc.success === false;
+			rpc.type === "response" &&
+			rpc.command === "prompt" &&
+			rpc.success === false;
 		const aborted = rpc.type === "response" && rpc.command === "abort";
 		if (rpc.type === "agent_settled" || failedPrompt || aborted) {
 			this.running.delete(chatId);

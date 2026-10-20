@@ -186,7 +186,12 @@ function planSpans(
 		if (leftover < 1 || growable.length === 0) {
 			break;
 		}
-		const next = grow(spans, holdsHighlight, leftover / growable.length, length);
+		const next = grow(
+			spans,
+			holdsHighlight,
+			leftover / growable.length,
+			length,
+		);
 		if (covered(next) === covered(spans)) {
 			break;
 		}
@@ -278,7 +283,10 @@ export function layoutExcerpt(
 		const head = Math.floor(budget * HEAD_SHARE);
 		const tail = markdown.length - (budget - head);
 		const spans = [
-			{ start: 0, end: snapEnd(markdown, head, head - Math.floor(head * SNAP_REACH)) },
+			{
+				start: 0,
+				end: snapEnd(markdown, head, head - Math.floor(head * SNAP_REACH)),
+			},
 			{
 				start: snapStart(
 					markdown,
