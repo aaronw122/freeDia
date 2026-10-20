@@ -9,6 +9,7 @@ export type RunPhase =
 	| "queued"
 	| "thinking"
 	| "streaming"
+	| "tool"
 	| "retrying";
 
 export interface UserTurn {
@@ -18,14 +19,18 @@ export interface UserTurn {
 	pending: boolean;
 }
 
-export interface AssistantTurn {
-	kind: "assistant";
-	key: string;
+export interface ReplySegment {
 	parts: string[];
-	done: boolean;
 	stopReason: string | null;
 	errorMessage: string | null;
 	provider: string | null;
+}
+
+export interface AssistantTurn {
+	kind: "assistant";
+	key: string;
+	segments: ReplySegment[];
+	done: boolean;
 }
 
 export type Turn = UserTurn | AssistantTurn;
@@ -47,6 +52,7 @@ export interface TranscriptState {
 	chatId: string;
 	turns: Turn[];
 	phase: RunPhase;
+	tool: string | null;
 	retry: RetryInfo | null;
 	error: ChatError | null;
 	draft: { text: string; seq: number } | null;
@@ -67,11 +73,19 @@ const WAITING_PHASES: ReadonlySet<RunPhase> = new Set([
 	"queued",
 ]);
 
+const ABORTED_SEGMENT: ReplySegment = {
+	parts: [],
+	stopReason: "aborted",
+	errorMessage: null,
+	provider: null,
+};
+
 export function initialTranscript(chatId: string): TranscriptState {
 	return {
 		chatId,
 		turns: [],
 		phase: "idle",
+		tool: null,
 		retry: null,
 		error: null,
 		draft: null,
@@ -84,21 +98,44 @@ export function isRunning(state: TranscriptState): boolean {
 }
 
 export function assistantText(turn: AssistantTurn): string {
-	return turn.parts.join("");
+	return turn.segments
+		.map((segment) => segment.parts.join("").trim())
+		.filter((text) => text.length > 0)
+		.join("\n\n");
+}
+
+export function replyFailure(turn: AssistantTurn): ReplySegment | null {
+	const last = turn.segments.at(-1);
+	return last?.stopReason === "error" ? last : null;
+}
+
+export function replyStopped(turn: AssistantTurn): boolean {
+	return turn.segments.some((segment) => segment.stopReason === "aborted");
 }
 
 export function questionFromPrompt(text: string): string {
-	const heading = /^## Question[ \t]*$/m;
 	const lines = text.split("\n");
-	let index = -1;
-	lines.forEach((line, i) => {
-		if (heading.test(line)) index = i;
-	});
+	const index = lines.findLastIndex((line) => /^## Question[ \t]*$/.test(line));
 	if (index === -1) return text.trim();
 	return lines
 		.slice(index + 1)
 		.join("\n")
 		.trim();
+}
+
+export function toolLabel(toolName: string): string {
+	switch (toolName) {
+		case "read":
+			return "Reading the page…";
+		case "grep":
+			return "Searching the page…";
+		case "find":
+			return "Looking for files…";
+		case "ls":
+			return "Listing files…";
+		default:
+			return `Using ${toolName}…`;
+	}
 }
 
 interface PiMessage {
@@ -136,12 +173,9 @@ function stringOrNull(value: unknown): string | null {
 	return typeof value === "string" ? value : null;
 }
 
-function assistantFromMessage(message: PiMessage, key: string): AssistantTurn {
+function segmentFromMessage(message: PiMessage): ReplySegment {
 	return {
-		kind: "assistant",
-		key,
 		parts: textParts(message.content),
-		done: true,
 		stopReason: stringOrNull(message.stopReason),
 		errorMessage: stringOrNull(message.errorMessage),
 		provider: stringOrNull(message.provider),
@@ -153,39 +187,62 @@ export function turnsFromMessages(messages: PiRpcRecord[]): Turn[] {
 	messages.forEach((raw, index) => {
 		const message = asMessage(raw);
 		if (!message) return;
-		const key = `m${index}`;
+		const last = turns.at(-1);
 		if (message.role === "user") {
 			turns.push({
 				kind: "user",
-				key,
+				key: `m${index}`,
 				text: questionFromPrompt(textParts(message.content).join("")),
 				pending: false,
 			});
+		} else if (message.role === "assistant" && last?.kind === "assistant") {
+			last.segments.push(segmentFromMessage(message));
 		} else if (message.role === "assistant") {
-			turns.push(assistantFromMessage(message, key));
+			turns.push({
+				kind: "assistant",
+				key: `m${index}`,
+				segments: [segmentFromMessage(message)],
+				done: true,
+			});
 		}
 	});
 	return turns;
 }
 
-function lastAssistantIndex(turns: Turn[]): number {
-	for (let i = turns.length - 1; i >= 0; i--) {
-		if (turns[i]?.kind === "assistant") return i;
-	}
-	return -1;
+function nextKey(state: TranscriptState): [string, number] {
+	return [`t${state.seq}`, state.seq + 1];
 }
 
-function replaceAt(turns: Turn[], index: number, turn: Turn): Turn[] {
-	return turns.map((existing, i) => (i === index ? turn : existing));
-}
-
-function streamingAssistant(state: TranscriptState): AssistantTurn | null {
+function openReply(state: TranscriptState): AssistantTurn | null {
 	const last = state.turns.at(-1);
 	return last?.kind === "assistant" && !last.done ? last : null;
 }
 
-function nextKey(state: TranscriptState): [string, number] {
-	return [`t${state.seq}`, state.seq + 1];
+function withOpenReply(
+	state: TranscriptState,
+	update: (turn: AssistantTurn) => AssistantTurn,
+): TranscriptState {
+	const turn = openReply(state);
+	if (turn) {
+		return { ...state, turns: [...state.turns.slice(0, -1), update(turn)] };
+	}
+	const [key, seq] = nextKey(state);
+	const fresh: AssistantTurn = {
+		kind: "assistant",
+		key,
+		segments: [],
+		done: false,
+	};
+	return { ...state, seq, turns: [...state.turns, update(fresh)] };
+}
+
+function withLastSegment(
+	turn: AssistantTurn,
+	update: (segment: ReplySegment) => ReplySegment,
+): AssistantTurn {
+	const last = turn.segments.at(-1);
+	if (!last) return turn;
+	return { ...turn, segments: [...turn.segments.slice(0, -1), update(last)] };
 }
 
 function dropPendingUser(
@@ -195,7 +252,7 @@ function dropPendingUser(
 		(turn) => turn.kind === "user" && turn.pending,
 	);
 	const pending = state.turns[index];
-	if (index === -1 || pending?.kind !== "user") return [state.turns, null];
+	if (pending?.kind !== "user") return [state.turns, null];
 	return [
 		state.turns.filter((_, i) => i !== index),
 		{ text: pending.text, seq: state.seq },
@@ -208,6 +265,7 @@ function failSend(state: TranscriptState, error: ChatError): TranscriptState {
 		...state,
 		turns,
 		phase: "idle",
+		tool: null,
 		retry: null,
 		error,
 		draft: draft ?? state.draft,
@@ -215,41 +273,38 @@ function failSend(state: TranscriptState, error: ChatError): TranscriptState {
 	};
 }
 
+function hasPendingUser(state: TranscriptState): boolean {
+	return state.turns.some((turn) => turn.kind === "user" && turn.pending);
+}
+
 function onAssistantEvent(
 	state: TranscriptState,
 	event: Record<string, unknown>,
 ): TranscriptState {
-	const turn = streamingAssistant(state);
-	if (!turn) return state;
+	const turn = openReply(state);
+	if (!turn || turn.segments.length === 0) return state;
 	const index = typeof event.contentIndex === "number" ? event.contentIndex : 0;
-	const parts = [...turn.parts];
-	while (parts.length <= index) parts.push("");
-	if (event.type === "text_delta" && typeof event.delta === "string") {
-		parts[index] = `${parts[index] ?? ""}${event.delta}`;
-		const firstText =
-			event.delta.length > 0 &&
-			(state.phase === "thinking" || state.phase === "retrying");
-		return {
-			...state,
-			phase: firstText ? "streaming" : state.phase,
-			retry: firstText ? null : state.retry,
-			turns: replaceAt(state.turns, state.turns.length - 1, {
-				...turn,
-				parts,
-			}),
-		};
-	}
-	if (event.type === "text_end" && typeof event.content === "string") {
-		parts[index] = event.content;
-		return {
-			...state,
-			turns: replaceAt(state.turns, state.turns.length - 1, {
-				...turn,
-				parts,
-			}),
-		};
-	}
-	return state;
+	const text =
+		event.type === "text_delta" && typeof event.delta === "string"
+			? { value: event.delta, append: true }
+			: event.type === "text_end" && typeof event.content === "string"
+				? { value: event.content, append: false }
+				: null;
+	if (!text) return state;
+	const next = withOpenReply(state, (open) =>
+		withLastSegment(open, (segment) => {
+			const parts = [...segment.parts];
+			while (parts.length <= index) parts.push("");
+			parts[index] = text.append
+				? `${parts[index] ?? ""}${text.value}`
+				: text.value;
+			return { ...segment, parts };
+		}),
+	);
+	const firstText =
+		text.value.length > 0 &&
+		(state.phase === "thinking" || state.phase === "retrying");
+	return firstText ? { ...next, phase: "streaming", retry: null } : next;
 }
 
 function onMessageStart(
@@ -257,61 +312,37 @@ function onMessageStart(
 	message: PiMessage,
 ): TranscriptState {
 	if (message.role !== "assistant") return state;
-	const [key, seq] = nextKey(state);
-	const turn: AssistantTurn = {
-		kind: "assistant",
-		key,
-		parts: [],
-		done: false,
-		stopReason: null,
-		errorMessage: null,
-		provider: stringOrNull(message.provider),
-	};
+	const next = withOpenReply(state, (turn) => ({
+		...turn,
+		segments: [
+			...turn.segments,
+			{ ...segmentFromMessage(message), parts: [], stopReason: null },
+		],
+	}));
 	return {
-		...state,
-		seq,
+		...next,
+		tool: null,
 		phase: state.phase === "retrying" ? "retrying" : "thinking",
-		turns: [...state.turns, turn],
 	};
 }
 
-function onMessageEnd(
+function onUserEcho(
 	state: TranscriptState,
 	message: PiMessage,
 ): TranscriptState {
-	if (message.role === "user") {
-		const text = questionFromPrompt(textParts(message.content).join(""));
-		const index = state.turns.findIndex(
-			(turn) => turn.kind === "user" && turn.pending,
-		);
-		const existing = state.turns[index];
-		if (index !== -1 && existing) {
-			return {
-				...state,
-				turns: replaceAt(state.turns, index, {
-					kind: "user",
-					key: existing.key,
-					text,
-					pending: false,
-				}),
-			};
-		}
-		const [key, seq] = nextKey(state);
+	const text = questionFromPrompt(textParts(message.content).join(""));
+	const pending = state.turns.flatMap((turn, index) =>
+		turn.kind === "user" && turn.pending ? [{ turn, index }] : [],
+	);
+	const match =
+		pending.find(({ turn }) => turn.text === text) ?? pending.at(-1);
+	if (match) {
 		return {
 			...state,
-			seq,
-			turns: [...state.turns, { kind: "user", key, text, pending: false }],
-		};
-	}
-	if (message.role !== "assistant") return state;
-	const current = streamingAssistant(state);
-	if (current) {
-		return {
-			...state,
-			turns: replaceAt(
-				state.turns,
-				state.turns.length - 1,
-				assistantFromMessage(message, current.key),
+			turns: state.turns.map((turn, index) =>
+				index === match.index
+					? { kind: "user", key: match.turn.key, text, pending: false }
+					: turn,
 			),
 		};
 	}
@@ -319,31 +350,59 @@ function onMessageEnd(
 	return {
 		...state,
 		seq,
-		turns: [...state.turns, assistantFromMessage(message, key)],
+		turns: [...state.turns, { kind: "user", key, text, pending: false }],
 	};
 }
 
-function settle(state: TranscriptState): TranscriptState {
-	const turns = state.turns.map((turn) =>
-		turn.kind === "assistant" && !turn.done ? { ...turn, done: true } : turn,
+function onMessageEnd(
+	state: TranscriptState,
+	message: PiMessage,
+): TranscriptState {
+	if (message.role === "user") return onUserEcho(state, message);
+	if (message.role !== "assistant") return state;
+	const segment = segmentFromMessage(message);
+	return withOpenReply(state, (turn) =>
+		turn.segments.length === 0
+			? { ...turn, segments: [segment] }
+			: withLastSegment(turn, () => segment),
 	);
-	return { ...state, turns, phase: "idle", retry: null };
+}
+
+function settle(state: TranscriptState): TranscriptState {
+	const turns: Turn[] = [];
+	for (const turn of state.turns) {
+		if (turn.kind === "assistant" && !turn.done) {
+			turns.push({ ...turn, done: true });
+		} else if (turn.kind === "user" && turn.pending) {
+			turns.push({ ...turn, pending: false });
+			turns.push({
+				kind: "assistant",
+				key: `${turn.key}-stopped`,
+				segments: [ABORTED_SEGMENT],
+				done: true,
+			});
+		} else {
+			turns.push(turn);
+		}
+	}
+	return { ...state, turns, phase: "idle", tool: null, retry: null };
 }
 
 function onRetryStart(
 	state: TranscriptState,
 	record: PiRpcRecord,
 ): TranscriptState {
-	const index = lastAssistantIndex(state.turns);
-	const last = state.turns[index];
-	const turns =
-		last?.kind === "assistant" && last.stopReason === "error"
-			? state.turns.filter((_, i) => i !== index)
-			: state.turns;
+	const failed = openReply(state);
+	const provider = failed?.segments.at(-1)?.provider ?? state.retry?.provider;
+	const next = withOpenReply(state, (turn) =>
+		replyFailure(turn)
+			? { ...turn, segments: turn.segments.slice(0, -1) }
+			: turn,
+	);
 	return {
-		...state,
-		turns,
+		...next,
 		phase: "retrying",
+		tool: null,
 		retry: {
 			attempt: typeof record.attempt === "number" ? record.attempt : 1,
 			maxAttempts:
@@ -351,10 +410,7 @@ function onRetryStart(
 			delayMs: typeof record.delayMs === "number" ? record.delayMs : 0,
 			errorMessage:
 				typeof record.errorMessage === "string" ? record.errorMessage : "",
-			provider:
-				last?.kind === "assistant"
-					? last.provider
-					: (state.retry?.provider ?? null),
+			provider: provider ?? null,
 		},
 	};
 }
@@ -363,42 +419,45 @@ function onRetryEnd(
 	state: TranscriptState,
 	record: PiRpcRecord,
 ): TranscriptState {
-	const last = state.turns.at(-1);
-	const needsTurn =
-		record.success === false &&
-		!(last?.kind === "assistant" && last.stopReason === "error");
-	if (!needsTurn) return { ...state, retry: null };
+	const turn = openReply(state);
+	if (record.success !== false || (turn && replyFailure(turn))) {
+		return { ...state, retry: null };
+	}
 	const cancelled = record.finalError === "Retry cancelled";
-	const [key, seq] = nextKey(state);
-	const turn: AssistantTurn = {
-		kind: "assistant",
-		key,
-		parts: [],
-		done: true,
-		stopReason: cancelled ? "aborted" : "error",
-		errorMessage: cancelled ? null : stringOrNull(record.finalError),
-		provider: null,
-	};
-	return { ...state, seq, retry: null, turns: [...state.turns, turn] };
+	const segment: ReplySegment = cancelled
+		? ABORTED_SEGMENT
+		: {
+				parts: [],
+				stopReason: "error",
+				errorMessage: stringOrNull(record.finalError),
+				provider: state.retry?.provider ?? null,
+			};
+	const next = withOpenReply(state, (open) => ({
+		...open,
+		segments: [...open.segments, segment],
+	}));
+	return { ...next, retry: null };
 }
 
 function onRpc(state: TranscriptState, record: PiRpcRecord): TranscriptState {
 	switch (record.type) {
-		case "response": {
+		case "response":
+			if (record.command === "abort" && record.success === true) {
+				return isRunning(state) || hasPendingUser(state)
+					? settle(state)
+					: state;
+			}
 			if (record.command !== "prompt") return state;
 			if (record.success === true) {
 				return WAITING_PHASES.has(state.phase)
 					? { ...state, phase: "thinking" }
 					: state;
 			}
-			if (!state.turns.some((turn) => turn.kind === "user" && turn.pending)) {
-				return state;
-			}
+			if (!hasPendingUser(state)) return state;
 			return failSend(state, {
 				source: "prompt",
 				message: typeof record.error === "string" ? record.error : "",
 			});
-		}
 		case "agent_start":
 			return WAITING_PHASES.has(state.phase)
 				? { ...state, phase: "thinking" }
@@ -415,6 +474,14 @@ function onRpc(state: TranscriptState, record: PiRpcRecord): TranscriptState {
 			const message = asMessage(record.message);
 			return message ? onMessageEnd(state, message) : state;
 		}
+		case "tool_execution_start":
+			return typeof record.toolName === "string" && isRunning(state)
+				? { ...state, phase: "tool", tool: toolLabel(record.toolName) }
+				: state;
+		case "tool_execution_end":
+			return state.phase === "tool"
+				? { ...state, phase: "thinking", tool: null }
+				: state;
 		case "auto_retry_start":
 			return onRetryStart(state, record);
 		case "auto_retry_end":
@@ -465,6 +532,7 @@ export function transcriptReducer(
 				...state,
 				seq,
 				phase: "sending",
+				tool: null,
 				retry: null,
 				error: null,
 				turns: [
@@ -474,9 +542,7 @@ export function transcriptReducer(
 			};
 		}
 		case "send_failed":
-			if (!state.turns.some((turn) => turn.kind === "user" && turn.pending)) {
-				return state;
-			}
+			if (!hasPendingUser(state)) return state;
 			return failSend(state, { source: "prompt", message: action.message });
 		case "reset":
 			return action.chatId === state.chatId
