@@ -306,6 +306,8 @@ export class RealChatClient implements ChatClient {
 				}
 				this.emit({ type: "helper_error", error: message });
 				return;
+			case "helper.chunk":
+				return;
 			default:
 				this.settle(message.id, (pending) => {
 					pending.resolve(message as unknown as Record<string, unknown>);

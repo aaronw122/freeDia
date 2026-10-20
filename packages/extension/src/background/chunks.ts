@@ -1,26 +1,4 @@
-export interface HelperChunk {
-	type: "helper.chunk";
-	chatId?: string;
-	chunkId: string;
-	index: number;
-	count: number;
-	data: string;
-}
-
-export function isHelperChunk(value: unknown): value is HelperChunk {
-	if (typeof value !== "object" || value === null) {
-		return false;
-	}
-	const v = value as Record<string, unknown>;
-	return (
-		v.type === "helper.chunk" &&
-		typeof v.chunkId === "string" &&
-		Number.isInteger(v.index) &&
-		Number.isInteger(v.count) &&
-		(v.count as number) > 0 &&
-		typeof v.data === "string"
-	);
-}
+import type { HelperChunk } from "freedia/protocol";
 
 interface Pending {
 	count: number;

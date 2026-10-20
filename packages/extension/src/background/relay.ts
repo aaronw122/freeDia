@@ -4,6 +4,7 @@ import {
 	isChatId,
 	isEnvelope,
 	isForwardedRpc,
+	isHelperChunk,
 	isHelperCommand,
 } from "freedia/protocol";
 import type { ConnectionState } from "../client/types";
@@ -15,7 +16,7 @@ import {
 	removePageRecord,
 	saveTabChats,
 } from "../lib/store";
-import { ChunkAssembler, isHelperChunk } from "./chunks";
+import { ChunkAssembler } from "./chunks";
 
 export interface NativePort {
 	postMessage(message: ExtensionToHelper): void;
