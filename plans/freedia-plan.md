@@ -24,7 +24,7 @@ Decided 2026-10-19:
 Decided 2026-10-20:
 - **chatId = lowercase UUID v4** from `crypto.randomUUID()`; it is the pi session ID (see Contract).
 - **No warm pool (plan A).** pi exits after every reply and is respawned per message with `--session-id`. Dia's agent server does the same with the Claude Agent SDK (`--resume` per request; no model process alive while idle). Revisit only if respawn becomes noticeable.
-- **Page text** as in the Page text section: excerpt kept in the chat, full page as a temporary file, re-sent only when the page changes or after 30 quiet minutes.
+- **Page text** as in the Page text section: excerpt (10% of context window, 2k–20k tokens, 75/25 or centered on the highlight) kept in the chat; full page as a temporary file. A changed page gets a new excerpt and file; an unchanged page after 30 quiet minutes or a reconnect gets the file only; a new highlight on the same page gets only the window around it.
 
 ## Environment prerequisites
 
@@ -117,7 +117,7 @@ Memory: ~91 MB per pi process, only while a chat is generating, so at most 3 × 
 Modelled on Dia (`notes/research-page-text-cap.md`, `~/code/personal/Projects/notes/dia-decompile-analysis.md` §3): page as markdown, a bounded excerpt in the message, the full page readable on demand. Dia's tab reader cuts start-only: `truncatingTextContent(totalCharacterBudget:)` keeps `prefix(limit − 1) + "…"` and drops the rest; the limit comes from remote config (disassembly in the analysis note). Brave Leo, Firefox and Chrome also keep the start only. **freeDia deliberately differs:** it keeps the end too (75/25), so conclusions survive, and centers on the highlight when there is one, so the model sees the text around the selection instead of only the top of the page.
 
 1. **Extraction (extension, current tab):** Readability → markdown (Turndown). Fall back to visible `innerText` when Readability returns null or keeps < ~20% of it. Compute a fingerprint (hash) of the markdown.
-2. **Excerpt (in the message, saved in the chat):** budget = **10% of the selected model's `contextWindow`** (from `get_available_models`), with a floor and ceiling, converted at ~4 chars/token.
+2. **Excerpt (in the message, saved in the chat):** budget = **10% of the selected model's `contextWindow`** (from `get_available_models`), clamped to **2k–20k tokens** (~8k–80k chars at ~4 chars/token). A 200k model gets the full 10%; larger models are capped, because the excerpt stays in the history and is re-sent to the model on every later turn.
 
    | | Start | Middle | End |
    |---|---|---|---|
@@ -129,9 +129,19 @@ Modelled on Dia (`notes/research-page-text-cap.md`, `~/code/personal/Projects/no
    **Highlight near the start or end:** the window can't be centered, so the unused share moves to the other side: a highlight in the first part of the page takes everything after it, one near the end takes everything before it. A window that reaches the start or end piece merges with it, so nothing is sent twice and the whole budget is always used. E.g. highlight in the intro → one continuous block from the top of the page plus the ~5% end.
 3. **Highlight:** always sent in full as its own block, capped at the same budget against select-all.
 4. **Full page (temporary, never in the chat):** sent with `page.put`; the helper writes `~/.freedia/pages/<chatId>.md`, which pi can read with its read-only tools.
-5. **When to re-send excerpt + full page:** fingerprint changed (navigation or content change), chat quiet ≥ **30 min**, or the extension reconnected to the helper. Otherwise the message carries only the question and quotes.
+5. **When to send what** (the extension keeps each chat's last fingerprint in `chrome.storage.local`, so this survives browser restarts):
+
+   | Situation | Excerpt in the message | Full-page file (`page.put`) |
+   |---|---|---|
+   | First message of the chat | Full layout (step 2) | Yes |
+   | Fingerprint changed (navigation or content change) | Full layout | Yes |
+   | Same page, new highlight | **Only the window around the new highlight** (the ~80% piece); start and end are already in the history | No |
+   | Same page, chat quiet ≥ **30 min** or extension reconnected | None: the old excerpt is still in the history | **Yes**: the file may be gone |
+   | Same page, otherwise | None | No |
+
+   The highlight itself is always sent in full (step 3).
 6. **Cleanup:** helper deletes the file after **60 min** unused (longer than the extension's 30, so the extension never assumes a deleted file), on `page.clear` / `chat.delete`, and clears `~/.freedia/pages` on startup.
-7. **Reopened chats:** earlier excerpts stay in the history; the next message builds a fresh file from the page the user is on now.
+7. **Reopened chats:** earlier excerpts stay in the history. The next message compares the current page with the chat's stored fingerprint and follows step 5: same page → file only; different page → full excerpt and file.
 
 ## Phases
 
