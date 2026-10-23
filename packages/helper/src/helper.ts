@@ -699,6 +699,15 @@ export class Helper {
 		chat.exited = Promise.all([proc.exited, reading, stderr]).then(([code]) =>
 			this.onExit(chat, code),
 		);
+		const title = this.pendingTitles.get(chatId);
+		if (title !== undefined) {
+			this.pendingTitles.delete(chatId);
+			this.send(chat, {
+				id: `${INTERNAL_PREFIX}title-${crypto.randomUUID()}`,
+				type: "set_session_name",
+				name: title,
+			});
+		}
 		return chat;
 	}
 
