@@ -121,7 +121,7 @@ test("a second chat over the concurrency limit waits, then runs", async ({
 	const second = await ChatPage.open(context, site.url("/short"));
 	await second.open();
 	await first.send(SLOW);
-	await expect(first.stopButton).toBeVisible();
+	await expect(first.assistant.first()).toContainText("Sentence 2");
 	await second.send("Is the ticket office open on holidays?");
 	await expect(
 		second.dialog.getByRole("status", {

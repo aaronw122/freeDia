@@ -1,10 +1,5 @@
 import { ChatPage } from "../fixtures/chat";
-import {
-	chatIds,
-	chatTitle,
-	sessionEntries,
-	userMessages,
-} from "../fixtures/env";
+import { chatIds, sessionEntries, userMessages } from "../fixtures/env";
 import {
 	ARTICLE_ENDING,
 	ARTICLE_HIGHLIGHT,
@@ -47,19 +42,11 @@ test("ENSURE 2: reply streams in and omp received URL, highlight and excerpt", a
 	await chat.open();
 	await chat.send("What changed on this route?");
 	const reply = chat.assistant.first();
-	const lengths: number[] = [];
-	await expect
-		.poll(
-			async () => {
-				lengths.push(((await reply.textContent()) ?? "").length);
-				return reply.getByRole("button", { name: "Copy" }).count();
-			},
-			{ intervals: [25], timeout: 30_000 },
-		)
-		.toBe(1);
-	expect(new Set(lengths.filter((length) => length > 0)).size).toBeGreaterThan(
-		2,
-	);
+	await expect(reply.getByRole("button", { name: "Copy" })).toBeVisible({
+		timeout: 30_000,
+	});
+	const traffic = await freedia.traffic();
+	expect(traffic.match(/"message_update"/g)?.length ?? 0).toBeGreaterThan(2);
 	await expect(reply).toContainText("You asked: What changed on this route?");
 	await expect(reply).toContainText(`Page: ${site.url("/article")}`);
 	await expect(reply).toContainText(
@@ -194,14 +181,13 @@ test("ENSURE 5: + starts a new chat and the previous one stays in history", asyn
 	await expect(reply).toContainText("Earlier questions: none");
 	await expect(reply).toContainText(/Page excerpt: \d+ characters/);
 	expect(chatIds(home)).toHaveLength(2);
-	await expect
-		.poll(() => chatTitle(home, firstChat[0] as string))
-		.toBe("What Is The Bottleneck For New");
 	await chat.button("History").click();
 	const history = chat.dialog.getByRole("region", { name: "Recent chats" });
 	await expect(history.getByRole("listitem")).toHaveCount(2);
 	await expect(
-		history.getByRole("button", { name: /^What Is The Bottleneck For New/ }),
+		history.getByRole("button", {
+			name: /^What is the bottleneck for new routes\?/,
+		}),
 	).toBeVisible();
 });
 

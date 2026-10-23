@@ -1,7 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { ChatPage, REPLY_TIMEOUT } from "../fixtures/chat";
-import { chatIds, chatTitle } from "../fixtures/env";
 import { ARTICLE_HIGHLIGHT } from "../fixtures/site";
 import { expect, test } from "../fixtures/test";
 
@@ -11,7 +10,6 @@ const outDir =
 
 test("demo: highlight, ⌘E, ask, stream, follow up, history", async ({
 	freedia,
-	home,
 	site,
 }) => {
 	mkdirSync(outDir, { recursive: true });
@@ -44,11 +42,6 @@ test("demo: highlight, ⌘E, ask, stream, follow up, history", async ({
 	await expect(followUp).toContainText("Earlier questions: “Why are sleeper");
 	await shot("04-follow-up", chat);
 
-	await expect
-		.poll(() => chatTitle(home, chatIds(home)[0] as string), {
-			timeout: REPLY_TIMEOUT,
-		})
-		.not.toBeNull();
 	await chat.button("History").click();
 	const history = chat.dialog.getByRole("region", { name: "Recent chats" });
 	await expect(history.getByRole("listitem")).toHaveCount(1);

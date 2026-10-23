@@ -102,21 +102,22 @@ export interface SessionState {
 
 export function readSession(file: string): SessionState {
 	const entries = readEntries(file);
-	const header = entries[0];
-	let name: string | undefined =
-		typeof header?.title === "string" && header.title !== ""
-			? header.title
-			: undefined;
+	const header = entries.find((entry) => entry.type === "session");
+	let name: string | undefined;
 	let updatedAt: string | undefined;
 	let model: string | undefined;
 	let userMessages = 0;
 	let firstReplyTurn: number | undefined;
 	for (const entry of entries) {
-		if (
-			(entry.type === "session_info" || entry.type === "title") &&
-			typeof entry.name === "string"
-		) {
+		if (entry.type === "session_info" && typeof entry.name === "string") {
 			name = entry.name;
+		}
+		if (
+			(entry.type === "title" || entry.type === "title_change") &&
+			typeof entry.title === "string" &&
+			entry.title !== ""
+		) {
+			name = entry.title;
 		}
 		if (entry.type === "model_change") {
 			if (typeof entry.model === "string") {

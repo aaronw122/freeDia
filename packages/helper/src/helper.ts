@@ -542,7 +542,10 @@ export class Helper {
 	): Promise<HelperError | undefined> {
 		if (!ompInstalled(this.paths))
 			return this.error("omp_missing", { id: rpc.id, chatId });
-		if (this.omp.defaultModel !== undefined) {
+		if (
+			this.omp.defaultModel?.startsWith("faux/") === true &&
+			this.omp.passEnv.FREEDIA_FAUX_CONTEXT !== undefined
+		) {
 			this.checkedProviders.add("authenticated");
 			return undefined;
 		}
@@ -907,7 +910,8 @@ export class Helper {
 	}
 
 	private onExit(chat: ChatProcess, code: number): void {
-		if (this.processes.get(chat.chatId) === chat) {
+		const owned = this.processes.get(chat.chatId) === chat;
+		if (owned) {
 			this.processes.delete(chat.chatId);
 		}
 		if (chat.runActive || chat.userPending.length > 0) {
@@ -921,7 +925,7 @@ export class Helper {
 				}),
 			);
 		}
-		this.releaseSlot(chat.chatId);
+		if (owned && !this.starting.has(chat.chatId)) this.releaseSlot(chat.chatId);
 		if (this.pendingTitles.has(chat.chatId) && !this.isQueued(chat.chatId)) {
 			this.track(this.inChain(chat.chatId, () => this.applyTitle(chat.chatId)));
 		}
@@ -936,7 +940,10 @@ export class Helper {
 		if (chat === undefined) {
 			return;
 		}
-		if (chat.runActive && !chat.stdinClosed) {
+		if (
+			!chat.stdinClosed &&
+			(chat.runActive || this.slots.has(chatId) || this.starting.has(chatId))
+		) {
 			this.send(chat, {
 				id: `${INTERNAL_PREFIX}abort-${crypto.randomUUID()}`,
 				type: "abort",

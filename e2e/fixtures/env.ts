@@ -104,6 +104,7 @@ export async function createHome(
 	const env = {
 		HOME: home,
 		PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+		FREEDIA_FAUX_CONTEXT: String(FAUX_CONTEXT_WINDOW),
 		FREEDIA_OMP_EXTRA_ARGS: "--model faux/faux-1",
 		...extraEnv,
 	};
@@ -153,8 +154,13 @@ export interface SessionEntry {
 }
 
 export function chatIds(home: FreediaHome): string[] {
-	return Array.from(
+	const ids = Array.from(
 		new Set(sessionFiles(home).map((name) => name.split("/")[0] ?? "")),
+	);
+	return ids.filter((chatId) =>
+		sessionEntries(home, chatId).some(
+			(entry) => entry.type === "message" && entry.message?.role === "user",
+		),
 	);
 }
 
@@ -327,9 +333,7 @@ export class FreediaBrowser {
 				};
 				port.onMessage.addListener((message: unknown) => {
 					const text = JSON.stringify(message);
-					if (!text.includes('"message_update"')) {
-						traffic.push(`${stamp()} ← ${text.slice(0, 300)}`);
-					}
+					traffic.push(`${stamp()} ← ${text.slice(0, 300)}`);
 				});
 				port.onDisconnect.addListener(() => {
 					traffic.push(
