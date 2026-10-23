@@ -294,10 +294,19 @@ describe("routing and pool", () => {
 			(rpc) => rpc.type === "session_settled",
 			"settled",
 		);
+		const chatPids = new Set(h.chatSpawns(CHAT_A).map((spawn) => spawn.pid));
 		const emitted = h
 			.fakeLog()
-			.filter((entry) => entry.event === "stdout")
-			.map((entry) => entry.record);
+			.filter((entry) => entry.event === "stdout" && chatPids.has(entry.pid))
+			.map((entry) => entry.record)
+			.filter(
+				(record) =>
+					record?.type !== "ready" &&
+					!(
+						typeof record?.id === "string" &&
+						record.id.startsWith("freedia-internal-")
+					),
+			);
 		expect(h.rpcs(CHAT_A)).toEqual(emitted as never);
 	});
 
@@ -346,13 +355,26 @@ describe("routing and pool", () => {
 		expect(h.rpcs(CHAT_A)).toEqual([
 			{ id: "a2", type: "response", command: "abort", success: true },
 		]);
-		const spawns = h.chatSpawns(CHAT_A);
-		expect(spawns).toHaveLength(1);
+		const spawns = new Set(
+			h.spawns((argv) => argv.includes("--tools")).map((spawn) => spawn.pid),
+		);
+		expect(spawns.size).toBe(1);
+		const [pid] = spawns;
 		const events = h
 			.fakeLog()
-			.filter((entry) => entry.pid === spawns[0]?.pid)
+			.filter((entry) => entry.pid === pid)
 			.map((entry) => entry.event);
-		expect(events).toEqual(["spawn", "eof"]);
+		expect(events.at(-1)).toBe("eof");
+		expect(
+			h
+				.fakeLog()
+				.some(
+					(entry) =>
+						entry.pid === pid &&
+						entry.event === "stdin" &&
+						entry.record?.type === "prompt",
+				),
+		).toBe(false);
 		await h.send({ type: "helper.hello", id: "h1", maxConcurrent: 1 });
 		await h.rpc(CHAT_B, prompt("b1", "next chat still gets a slot"));
 		await h.waitForRpc(CHAT_B, (rpc) => rpc.id === "b1", "B started");
@@ -430,10 +452,14 @@ describe("routing and pool", () => {
 
 	test("get_messages on a reopened chat spawns pi and exits after the response", async () => {
 		const h = helper({ fake: { defaultScript: "abort-resume" } });
-		mkdirSync(h.paths.chats, { recursive: true });
+		mkdirSync(join(h.paths.chats, CHAT_A), { recursive: true });
 		writeFileSync(
-			join(h.paths.chats, `2026-10-20T00-00-00-000Z_${CHAT_A}.jsonl`),
-			`${JSON.stringify({ type: "session", version: 3, id: CHAT_A })}\n`,
+			join(
+				h.paths.chats,
+				CHAT_A,
+				"2026-10-20T00-00-00-000Z_01a166fd-3cf2-7669-8f7d-a0be9cbc547d.jsonl",
+			),
+			`${JSON.stringify({ type: "session", version: 3, id: "01a166fd-3cf2-7669-8f7d-a0be9cbc547d" })}\n`,
 		);
 		await h.rpc(CHAT_A, { id: "g1", type: "get_messages" });
 		const reply = await h.waitForRpc(
@@ -649,26 +675,24 @@ describe("chat titles", () => {
 			"title written",
 		);
 		await h.waitIdle();
-		const titleSpawn = h.spawns((argv) => argv.includes("--no-session"));
+		const titleSpawn = h.spawns((argv) => argv.includes("-p"));
 		expect(titleSpawn).toHaveLength(1);
 		expect(titleSpawn[0]?.argv).toContain("--model");
-		const titlePrompt = h
-			.fakeLog()
-			.find(
-				(entry) => entry.pid === titleSpawn[0]?.pid && entry.event === "stdin",
-			)?.record;
-		expect(String(titlePrompt?.message)).toContain("Page title: Fruit Facts");
-		expect(String(titlePrompt?.message)).toContain(
-			"Question: remember the word pineapple",
-		);
-		expect(String(titlePrompt?.message)).not.toContain("URL:");
+		const titlePrompt = titleSpawn[0]?.argv?.at(-1);
+		expect(titlePrompt).toContain("Page title: Fruit Facts");
+		expect(titlePrompt).toContain("Question: remember the word pineapple");
+		expect(titlePrompt).not.toContain("URL:");
 		const namer = h.chatSpawns(CHAT_A)[1];
 		const namerArgv = namer?.argv ?? [];
-		expect(namerArgv[namerArgv.indexOf("--model") + 1]).toBe("faux/faux-1");
+		expect(namerArgv).not.toContain("--model");
 		const named = h
 			.fakeLog()
 			.filter((entry) => entry.pid === namer?.pid && entry.event === "stdin");
-		expect(named.map((entry) => entry.record)).toEqual([
+		expect(
+			named
+				.map((entry) => entry.record)
+				.filter((record) => record?.type === "set_session_name"),
+		).toEqual([
 			expect.objectContaining({
 				type: "set_session_name",
 				name: "Pineapples: A Long Title That Keeps Going On",
@@ -710,17 +734,9 @@ describe("chat titles", () => {
 			.fakeLog()
 			.filter(
 				(entry) =>
-					entry.event === "stdin" &&
-					entry.pid !==
-						h.spawns((argv) => argv.includes("--no-session"))[0]?.pid,
+					entry.event === "stdin" && entry.record?.type === "set_session_name",
 			);
-		const firstOfSpawn = new Map<number, string>();
-		for (const entry of commands) {
-			if (!firstOfSpawn.has(entry.pid)) {
-				firstOfSpawn.set(entry.pid, entry.record?.type ?? "");
-			}
-		}
-		expect([...firstOfSpawn.values()]).toContain("set_session_name");
+		expect(commands).toHaveLength(1);
 		expect(
 			h.fakeLog().filter((entry) => entry.record?.type === "set_session_name"),
 		).toHaveLength(1);

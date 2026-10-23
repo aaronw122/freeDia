@@ -574,7 +574,16 @@ export class Helper {
 	private async startPrompt(chatId: string, rpc: ForwardedRpc): Promise<void> {
 		let chat = this.liveProcess(chatId);
 		if (chat === undefined) {
-			const problem = await this.preflight(chatId, rpc);
+			let problem: HelperError | undefined;
+			try {
+				problem = await this.preflight(chatId, rpc);
+			} catch (error) {
+				problem = this.error("spawn_failed", {
+					id: rpc.id,
+					chatId,
+					message: `The helper could not start omp: ${error instanceof Error ? error.message : error}`,
+				});
+			}
 			if (problem !== undefined) {
 				if (!this.endStart(chatId)) {
 					this.output.message(problem);
@@ -732,7 +741,13 @@ export class Helper {
 	}
 
 	private closeIfIdle(chat: ChatProcess): void {
-		if (chat.stdinClosed || chat.pendingResponses > 0 || chat.runActive) {
+		if (
+			chat.stdinClosed ||
+			!chat.bound ||
+			chat.queued.length > 0 ||
+			chat.pendingResponses > 0 ||
+			chat.runActive
+		) {
 			return;
 		}
 		chat.stdinClosed = true;

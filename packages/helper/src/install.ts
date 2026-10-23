@@ -251,7 +251,9 @@ export async function doctor(
 		detail:
 			manifest === undefined
 				? `missing: ${paths.nativeHostManifest}`
-				: paths.nativeHostManifest,
+				: missingOrigins.length > 0
+					? `missing origins: ${missingOrigins.join(", ")}`
+					: paths.nativeHostManifest,
 	});
 	const installed = ompVersion(paths);
 	checks.push({

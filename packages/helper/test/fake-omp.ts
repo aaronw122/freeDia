@@ -64,6 +64,7 @@ if (argv[0] === "--version") {
 }
 
 if (argv.includes("-p")) {
+	log({ event: "spawn", argv, env: { ...process.env }, cwd: process.cwd() });
 	console.log(config.title ?? "Faux Title");
 	process.exit(config.title === null ? 1 : 0);
 }

@@ -147,7 +147,10 @@ describe("freedia install", () => {
 		expect(signedIn).toBe(0);
 		expect(ready.lines).toContain("Signed in: anthropic");
 		const fresh = context({ signIn: async () => void signedIn++ });
-		writeFileSync(join(fresh.home, "fake-pi.json"), "{}");
+		writeFileSync(
+			join(fresh.paths.fakeHome, "fake-omp.json"),
+			JSON.stringify({ auth: {} }),
+		);
 		await install(fresh.ctx);
 		expect(signedIn).toBe(1);
 	});
@@ -171,8 +174,8 @@ describe("freedia doctor and uninstall", () => {
 		expect(after.map((check) => [check.name, check.ok])).toEqual([
 			["helper binary", true],
 			["native host manifest", true],
-			["pi", true],
-			["pi runs", true],
+			["omp", true],
+			["omp runs", true],
 			["signed in", true],
 		]);
 	});
