@@ -4,6 +4,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 
@@ -20,10 +21,12 @@ export interface FakeOmpConfig {
 	realTiming?: boolean;
 	title?: string | null;
 	exitAfterStdout?: number;
+	chunkResponse?: boolean;
+	openSessionError?: string;
 }
 
 const home = process.env.HOME as string;
-const fixtures = join(import.meta.dir, "fixtures", "pi");
+const fixtures = join(import.meta.dir, "fixtures", "omp");
 const logFile = join(home, "fake-omp-log.jsonl");
 const config: FakeOmpConfig = existsSync(join(home, "fake-omp.json"))
 	? JSON.parse(readFileSync(join(home, "fake-omp.json"), "utf8"))
@@ -150,12 +153,27 @@ function loadScript(): FixtureLine[] {
 						entry.record?.sessionDir === sessionDir,
 				).length
 		: 0;
-	const name =
+	const requested =
 		chatId === undefined
 			? "stream"
 			: (config.scripts?.[chatId]?.[Math.max(0, spawnsBefore - 1)] ??
 				config.defaultScript ??
 				"stream");
+	const fixtureByScenario: Record<string, string> = {
+		stream: "A-fresh",
+		abort: "C-abort",
+		"abort-resume": "C-abort",
+		"resume-create": "A-fresh",
+		"resume-continue": "B-resume",
+		"model-override-1-set-model": "A-fresh",
+		"model-override-3-resume-without-flag": "B-resume",
+		"not-signed-in-no-model": "D-unauth",
+		"prompt-while-streaming": "C-abort",
+		"provider-rejected-401": "provider-rejected-401",
+		"rate-limit": "rate-limit",
+		"tools-readonly": "E-readonly",
+	};
+	const name = fixtureByScenario[requested] ?? "A-fresh";
 	return readFileSync(join(fixtures, `${name}.jsonl`), "utf8")
 		.trim()
 		.split("\n")
@@ -183,9 +201,6 @@ async function emit(line: FixtureLine, id: string | undefined) {
 			? message.role
 			: undefined;
 	if (record.type === "response") {
-		if (record.command === "abort" && config.abortResponseDelayMs) {
-			await Bun.sleep(config.abortResponseDelayMs);
-		}
 		out({ ...record, ...(id === undefined ? {} : { id }) });
 		return;
 	}
@@ -238,8 +253,10 @@ async function handle(command: FixtureLine["record"]): Promise<void> {
 			id: command.id,
 			type: "response",
 			command: "open_session",
-			success: true,
-			data: { resumed: sessionFile() !== undefined, sessionId },
+			success: config.openSessionError === undefined,
+			...(config.openSessionError === undefined
+				? { data: { resumed: sessionFile() !== undefined, sessionId } }
+				: { error: config.openSessionError }),
 		});
 		return;
 	}
@@ -284,6 +301,30 @@ async function handle(command: FixtureLine["record"]): Promise<void> {
 			},
 		});
 	}
+	if (command.type === "get_state" && config.chunkResponse) {
+		const frame = Buffer.from(
+			JSON.stringify({
+				id: command.id,
+				type: "response",
+				command: "get_state",
+				success: true,
+				data: { model: { provider: "faux", id: "faux-1" } },
+			}),
+		);
+		const split = Math.ceil(frame.byteLength / 2);
+		const chunks = [frame.subarray(0, split), frame.subarray(split)];
+		for (const [index, chunk] of chunks.entries()) {
+			out({
+				type: "rpc_chunk",
+				chunkId: "real-shape",
+				index,
+				count: chunks.length,
+				byteLength: frame.byteLength,
+				data: chunk.toString("base64"),
+			});
+		}
+		return;
+	}
 	if (command.type === "get_state") {
 		const [provider, id] = (selectedModel ?? currentModel()).split("/");
 		out({
@@ -295,9 +336,22 @@ async function handle(command: FixtureLine["record"]): Promise<void> {
 		});
 		return;
 	}
-	if (command.type === "set_session_name") {
-		appendEntry({ type: "session_info", name: command.name });
-		out({ type: "session_info_changed", name: command.name });
+	if (command.type === "set_session_name" && typeof command.name === "string") {
+		const file = sessionFile();
+		if (file !== undefined) {
+			const lines = readFileSync(file, "utf8").trimEnd().split("\n");
+			const title = JSON.stringify({
+				type: "title",
+				v: 1,
+				title: command.name,
+				source: "user",
+				updatedAt: new Date().toISOString(),
+				pad: " ".repeat(140),
+			});
+			if (lines[0]?.startsWith('{"type":"title"')) lines[0] = title;
+			else lines.unshift(title);
+			writeFileSync(file, `${lines.join("\n")}\n`);
+		}
 		out({
 			id: command.id,
 			type: "response",

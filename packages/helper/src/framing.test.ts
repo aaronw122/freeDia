@@ -78,7 +78,7 @@ describe("native messaging framing", () => {
 		]);
 	});
 
-	test("splits pi stdout only on LF, keeping U+2028 inside records", () => {
+	test("splits omp stdout only on LF, keeping U+2028 inside records", () => {
 		const lines: string[] = [];
 		const splitter = splitLines((line) => lines.push(line));
 		const text = '{"a":"x y"}\n{"b":1}\n{"c"';
@@ -123,9 +123,9 @@ describe("host → extension size limit", () => {
 		expect(new FrameDecoder().push(frames[0] as Uint8Array)).toEqual([message]);
 	});
 
-	test("a ~3 MB get_messages response comes out as ordered chunks ≤ 1 MB that reassemble exactly", () => {
+	test("a ~2.8 MB get_messages response comes out as ordered chunks ≤ 1 MB that reassemble exactly", () => {
 		const stream = readFileSync(
-			join(import.meta.dir, "..", "test", "fixtures", "pi", "stream.jsonl"),
+			join(import.meta.dir, "..", "test", "fixtures", "omp", "A-fresh.jsonl"),
 			"utf8",
 		)
 			.trim()
@@ -151,7 +151,7 @@ describe("host → extension size limit", () => {
 		const totalBytes = new TextEncoder().encode(
 			JSON.stringify(original),
 		).byteLength;
-		expect(totalBytes).toBeGreaterThan(2_900_000);
+		expect(totalBytes).toBeGreaterThan(2_800_000);
 		expect(frames.length).toBe(Math.ceil(totalBytes / CHUNK_SLICE_BYTES));
 		for (const framed of frames) {
 			expect(framed.byteLength - 4).toBeLessThanOrEqual(MAX_HOST_MESSAGE_BYTES);

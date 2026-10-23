@@ -148,16 +148,8 @@ describe("first come, first served", () => {
 		expect(order).toEqual([CHAT_A, CHAT_B, CHAT_C]);
 	});
 
-	test("the sign-in check runs once per provider and again after a not-signed-in failure", async () => {
-		const h = helper({
-			fake: {
-				auth: { faux: "ready" },
-				scripts: {
-					[CHAT_A]: ["stream", "stream"],
-					[CHAT_B]: ["not-signed-in-no-model", "stream"],
-				},
-			},
-		});
+	test("the sign-in check runs once and keyless faux prompts succeed", async () => {
+		const h = helper({ fake: { auth: { faux: "ready" } } });
 		const authChecks = () =>
 			h
 				.fakeLog()
@@ -168,18 +160,12 @@ describe("first come, first served", () => {
 				).length;
 		await h.rpc(CHAT_A, prompt("a1", "one"));
 		await h.waitIdle();
-		await h.rpc(CHAT_A, prompt("a2", "two"));
+		await h.rpc(CHAT_B, prompt("b1", "two"));
 		await h.waitIdle();
 		expect(authChecks()).toBe(1);
-		await h.rpc(CHAT_B, prompt("b1", "rejected"));
-		await h.waitForRpc(CHAT_B, (rpc) => rpc.id === "b1", "rejected");
-		await h.waitIdle();
 		expect(h.rpcs(CHAT_B).find((rpc) => rpc.id === "b1")).toMatchObject({
-			success: false,
+			success: true,
 		});
-		await h.rpc(CHAT_B, prompt("b2", "again"));
-		await h.waitIdle();
-		expect(authChecks()).toBe(1);
 	});
 });
 
@@ -371,26 +357,16 @@ describe("extension input filtering", () => {
 	});
 });
 
-describe("titles after an empty aborted first run", () => {
-	test("no title until a run completes with assistant text", async () => {
-		const h = helper({
-			fake: {
-				title: "Fruit chat",
-				scripts: { [CHAT_A]: ["prompt-while-streaming", "stream"] },
-			},
-		});
+describe("titles after an aborted partial reply", () => {
+	test("the retained assistant partial can title the chat", async () => {
+		const h = helper({ fake: { title: "Fruit chat", defaultScript: "abort" } });
 		await h.rpc(CHAT_A, prompt("r1", "long [[long]]"));
 		await h.waitForRpc(CHAT_A, (rpc) => rpc.id === "r1", "accepted");
-		await h.rpc(CHAT_A, prompt("r2", "long [[long]]"));
-		await h.waitForRpc(CHAT_A, (rpc) => rpc.id === "r2", "rejected");
-		await h.rpc(CHAT_A, { id: "r3", type: "abort" });
-		await h.waitIdle();
-		expect(h.spawns((argv) => argv.includes("-p"))).toHaveLength(0);
-		await h.rpc(CHAT_A, prompt("r4", "how do pineapples grow"));
+		await h.rpc(CHAT_A, { id: "r2", type: "abort" });
 		await h.waitIdle();
 		expect(h.spawns((argv) => argv.includes("-p"))).toHaveLength(1);
 		expect(readFileSync(h.helperSession(CHAT_A), "utf8")).toContain(
-			'"name":"Fruit chat"',
+			'"title":"Fruit chat"',
 		);
 	});
 });

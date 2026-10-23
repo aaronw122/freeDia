@@ -115,7 +115,12 @@ interface ChatProcess {
 	queued: OmpRpcRecord[];
 	chunks: Map<
 		string,
-		{ count: number; byteLength: number; parts: Map<number, Uint8Array> }
+		{
+			count: number;
+			expectedBytes: number;
+			receivedBytes: number;
+			parts: Map<number, Uint8Array>;
+		}
 	>;
 }
 
@@ -542,13 +547,6 @@ export class Helper {
 	): Promise<HelperError | undefined> {
 		if (!ompInstalled(this.paths))
 			return this.error("omp_missing", { id: rpc.id, chatId });
-		if (
-			this.omp.defaultModel?.startsWith("faux/") === true &&
-			this.omp.passEnv.FREEDIA_FAUX_CONTEXT !== undefined
-		) {
-			this.checkedProviders.add("authenticated");
-			return undefined;
-		}
 		if (this.checkedProviders.has("authenticated")) return undefined;
 		const records = await this.oneShot(
 			{ id: "auth", type: "get_login_providers" },
@@ -563,16 +561,64 @@ export class Helper {
 			data && typeof data === "object" && "providers" in data
 				? data.providers
 				: undefined;
-		const authenticated =
-			Array.isArray(providers) &&
-			providers.some(
-				(provider) =>
-					provider &&
-					typeof provider === "object" &&
-					"authenticated" in provider &&
-					provider.authenticated === true,
+		const provider = this.launchModel(chatId)?.split("/")[0];
+		const loginProviders = Array.isArray(providers) ? providers : [];
+		const authenticated = loginProviders.some(
+			(candidate) =>
+				candidate &&
+				typeof candidate === "object" &&
+				"authenticated" in candidate &&
+				candidate.authenticated === true,
+		);
+		const selectedLogin = loginProviders.find(
+			(candidate) =>
+				candidate &&
+				typeof candidate === "object" &&
+				"id" in candidate &&
+				candidate.id === provider,
+		);
+		let keylessCustom = false;
+		if (
+			!authenticated &&
+			(provider === undefined || selectedLogin === undefined)
+		) {
+			const models = await this.oneShot(
+				{ id: "auth-models", type: "get_available_models" },
+				(record) => record.type === "response",
+				MODELS_TIMEOUT_MS,
 			);
-		if (!authenticated)
+			const modelResponse = models.find(
+				(record) => record.command === "get_available_models",
+			);
+			const modelData = modelResponse?.data;
+			const available =
+				modelData && typeof modelData === "object" && "models" in modelData
+					? modelData.models
+					: undefined;
+			const loginIds = new Set(
+				loginProviders.flatMap((candidate) =>
+					candidate &&
+					typeof candidate === "object" &&
+					"id" in candidate &&
+					typeof candidate.id === "string"
+						? [candidate.id]
+						: [],
+				),
+			);
+			keylessCustom =
+				Array.isArray(available) &&
+				available.some(
+					(model) =>
+						model &&
+						typeof model === "object" &&
+						"provider" in model &&
+						typeof model.provider === "string" &&
+						(provider === undefined
+							? !loginIds.has(model.provider)
+							: model.provider === provider),
+				);
+		}
+		if (!authenticated && !keylessCustom)
 			return this.error("not_signed_in", { id: rpc.id, chatId });
 		this.checkedProviders.add("authenticated");
 		return undefined;
@@ -677,8 +723,6 @@ export class Helper {
 				`updating omp to ${this.pinnedOmpVersion ?? "the helper's version"} failed (${error instanceof Error ? error.message : error})`,
 			);
 		}
-		const hadSession = sessionFiles(this.paths, chatId).length > 0;
-		if (hadSession) this.pendingModels.delete(chatId);
 		const model = await this.usableModel(this.launchModel(chatId));
 		const proc = spawnOmp(this.omp, chatLaunchArgs(this.omp, chatId, model));
 		const chat: ChatProcess = {
@@ -781,10 +825,15 @@ export class Helper {
 				type: "negotiate_protocol",
 				protocolVersion: 2,
 			});
+			const recoveryModel = this.pendingModels.get(chat.chatId);
+			const [provider, modelId] = recoveryModel?.split("/") ?? [];
 			this.send(chat, {
 				id: `${INTERNAL_PREFIX}open`,
 				type: "open_session",
 				sessionDir: `${this.paths.chats}/${chat.chatId}`,
+				...(provider === undefined || modelId === undefined
+					? {}
+					: { provider, modelId }),
 			});
 		}
 		const internal =
@@ -812,43 +861,79 @@ export class Helper {
 			!Number.isInteger(count) ||
 			!Number.isInteger(byteLength) ||
 			typeof data !== "string"
-		)
+		) {
+			this.rejectChunk(chat, typeof chunkId === "string" ? chunkId : undefined);
 			return;
+		}
 		const partIndex = index as number;
 		const partCount = count as number;
 		const expectedBytes = byteLength as number;
 		if (
 			partIndex < 0 ||
-			partCount < 1 ||
+			partCount < 2 ||
 			partIndex >= partCount ||
-			expectedBytes < 0 ||
+			expectedBytes < 1 ||
 			expectedBytes > RPC_REASSEMBLY_CAP
-		)
+		) {
+			this.rejectChunk(chat, chunkId);
 			return;
+		}
 		const bytes = Uint8Array.from(Buffer.from(data, "base64"));
-		if (bytes.byteLength !== expectedBytes) return;
+		if (bytes.byteLength > 256 * 1024) {
+			this.rejectChunk(chat, chunkId);
+			return;
+		}
 		const item = chat.chunks.get(chunkId) ?? {
 			count: partCount,
-			byteLength: 0,
+			expectedBytes,
+			receivedBytes: 0,
 			parts: new Map<number, Uint8Array>(),
 		};
 		if (
 			item.count !== partCount ||
+			item.expectedBytes !== expectedBytes ||
 			item.parts.has(partIndex) ||
-			item.byteLength + bytes.byteLength > RPC_REASSEMBLY_CAP
-		)
+			item.receivedBytes + bytes.byteLength > expectedBytes
+		) {
+			this.rejectChunk(chat, chunkId);
 			return;
+		}
 		item.parts.set(partIndex, bytes);
-		item.byteLength += bytes.byteLength;
+		item.receivedBytes += bytes.byteLength;
 		chat.chunks.set(chunkId, item);
 		if (item.parts.size !== item.count) return;
+		if (
+			item.receivedBytes !== item.expectedBytes ||
+			Array.from({ length: item.count }, (_, part) =>
+				item.parts.has(part),
+			).includes(false)
+		) {
+			this.rejectChunk(chat, chunkId);
+			return;
+		}
 		const joined = Buffer.concat(
 			Array.from({ length: item.count }, (_, part) =>
-				Buffer.from(item.parts.get(part) ?? []),
+				Buffer.from(item.parts.get(part) as Uint8Array),
 			),
 		);
 		chat.chunks.delete(chunkId);
 		this.onOmpLine(chat, joined.toString("utf8"));
+	}
+
+	private rejectChunk(chat: ChatProcess, chunkId: string | undefined): void {
+		if (chunkId !== undefined) chat.chunks.delete(chunkId);
+		const id = chat.userPending[0];
+		this.output.message(
+			this.error("spawn_failed", {
+				id,
+				chatId: chat.chatId,
+				message: "omp sent an invalid chunked RPC frame.",
+			}),
+		);
+		chat.pendingResponses = 0;
+		chat.userPending = [];
+		chat.stdinClosed = true;
+		chat.proc.stdin.end();
 	}
 
 	private onResponse(
@@ -863,20 +948,41 @@ export class Helper {
 		}
 		if (record.command === "open_session") {
 			if (record.success !== true) {
-				this.output.message(
-					this.error("spawn_failed", {
-						chatId: chat.chatId,
-						message:
-							typeof record.error === "string"
-								? record.error
-								: "omp could not open the chat session.",
-					}),
-				);
+				const message =
+					typeof record.error === "string"
+						? record.error
+						: "omp could not open the chat session.";
+				for (const command of chat.queued) {
+					if (
+						command.type === "set_model" &&
+						typeof command.provider === "string" &&
+						typeof command.modelId === "string"
+					) {
+						this.pendingModels.set(
+							chat.chatId,
+							`${command.provider}/${command.modelId}`,
+						);
+					}
+					if (
+						typeof command.id === "string" &&
+						!command.id.startsWith(INTERNAL_PREFIX)
+					) {
+						this.output.message(
+							this.error("spawn_failed", {
+								id: command.id,
+								chatId: chat.chatId,
+								message,
+							}),
+						);
+					}
+				}
 				chat.queued = [];
+				chat.stdinClosed = true;
 				chat.proc.stdin.end();
 				return;
 			}
 			chat.bound = true;
+			this.pendingModels.delete(chat.chatId);
 			const queued = chat.queued.splice(0);
 			for (const command of queued) this.send(chat, command);
 		}

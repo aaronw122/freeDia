@@ -128,6 +128,8 @@ export function titleArgs(
 		"-p",
 		"--no-session",
 		"--no-title",
+		"--no-tools",
+		...ISOLATION_FLAGS,
 		...(model === undefined ? [] : ["--model", model]),
 		prompt,
 	];

@@ -44,6 +44,13 @@ const BLOCKED = [
 	"abort_bash",
 	"steer",
 	"follow_up",
+	"open_session",
+	"negotiate_protocol",
+	"abort_and_prompt",
+	"get_login_providers",
+	"get_messages_page",
+	"branch",
+	"get_branch_messages",
 	"clear_queue",
 	"new_session",
 	"switch_session",
@@ -81,7 +88,7 @@ function prompt(id: string, question: string, title = "Example") {
 
 describe("allowlist", () => {
 	test.each(BLOCKED)(
-		"drops %s without spawning pi or replying",
+		"drops %s without spawning omp or replying",
 		async (type) => {
 			const h = helper();
 			await h.rpc(CHAT_A, { id: "r1", type, command: "touch /tmp/pwned" });
@@ -108,7 +115,7 @@ describe("allowlist", () => {
 	});
 });
 
-describe("pi launch", () => {
+describe("omp launch", () => {
 	test("uses the read-only flags, fixed cwd, clean env and test hook", async () => {
 		const h = helper({
 			env: {
@@ -225,7 +232,7 @@ describe("pi launch", () => {
 		expect(second[second.indexOf("--model") + 1]).toBe("faux/faux-2");
 	});
 
-	test("a resumed chat whose model pi no longer lists starts without --model", async () => {
+	test("a resumed chat whose model omp no longer lists starts without --model", async () => {
 		const h = helper();
 		await h.rpc(CHAT_A, prompt("r1", "hello"));
 		await h.waitForRpc(
@@ -286,7 +293,7 @@ describe("routing and pool", () => {
 		}
 	});
 
-	test("pi stdout lines are forwarded untouched in order", async () => {
+	test("omp stdout lines are forwarded untouched in order", async () => {
 		const h = helper();
 		await h.rpc(CHAT_A, prompt("r2", "hello from freeDia"));
 		await h.waitForRpc(
@@ -308,6 +315,70 @@ describe("routing and pool", () => {
 					),
 			);
 		expect(h.rpcs(CHAT_A)).toEqual(emitted as never);
+	});
+
+	test("reassembles omp rpc_chunk frames with whole-frame byteLength", async () => {
+		const h = helper({ fake: { chunkResponse: true } });
+		await h.rpc(CHAT_A, { id: "chunked", type: "get_state" });
+		const response = await h.waitForRpc(
+			CHAT_A,
+			(rpc) => rpc.id === "chunked",
+			"chunked state",
+		);
+		expect(response).toMatchObject({
+			type: "response",
+			command: "get_state",
+			success: true,
+			data: { model: { provider: "faux", id: "faux-1" } },
+		});
+		await h.waitIdle();
+		expect(
+			h.fakeLog().filter((entry) => entry.record?.type === "rpc_chunk"),
+		).toHaveLength(2);
+	});
+
+	test("failed open_session answers queued ids and rebinds with picked model", async () => {
+		const h = helper({
+			fake: { openSessionError: "Could not restore model gone/old" },
+		});
+		await h.rpc(CHAT_A, {
+			id: "pick",
+			type: "set_model",
+			provider: "faux",
+			modelId: "faux-2",
+		});
+		const first = await h.waitFor(
+			() =>
+				h.sent.find(
+					(message) => message.type === "helper.error" && message.id === "pick",
+				),
+			"failed bind",
+		);
+		expect(first).toMatchObject({
+			code: "spawn_failed",
+			message: "Could not restore model gone/old",
+		});
+		await h.waitIdle();
+		await h.rpc(CHAT_A, { id: "state", type: "get_state" });
+		await h.waitFor(
+			() =>
+				h.sent.find(
+					(message) =>
+						message.type === "helper.error" && message.id === "state",
+				),
+			"failed recovery bind",
+		);
+		await h.waitIdle();
+		const opens = h
+			.fakeLog()
+			.filter(
+				(entry) =>
+					entry.event === "stdin" && entry.record?.type === "open_session",
+			);
+		expect(opens.at(-1)?.record).toMatchObject({
+			provider: "faux",
+			modelId: "faux-2",
+		});
 	});
 
 	test("prompts over maxConcurrent queue and start when a slot frees", async () => {
@@ -341,7 +412,7 @@ describe("routing and pool", () => {
 		expect(h.fakeLog().some((entry) => entry.record?.id === "c1")).toBe(false);
 	});
 
-	test("abort while starting: the prompt never reaches pi, pi closes, then the abort response", async () => {
+	test("abort while starting: the prompt never reaches omp, omp closes, then the abort response", async () => {
 		const h = helper({
 			fake: { defaultScript: "abort" },
 			onMessage: (message, harness) => {
@@ -380,9 +451,14 @@ describe("routing and pool", () => {
 		await h.waitForRpc(CHAT_B, (rpc) => rpc.id === "b1", "B started");
 		await h.rpc(CHAT_B, { id: "b2", type: "abort" });
 		await h.waitIdle();
-		expect(h.rpcs(CHAT_B).slice(-2)).toEqual([
-			{ type: "session_settled", aborted: true },
+		expect(h.rpcs(CHAT_B).slice(-3)).toEqual([
 			{ id: "b2", type: "response", command: "abort", success: true },
+			expect.objectContaining({
+				type: "prompt_result",
+				status: "aborted",
+				sessionSettled: true,
+			}),
+			{ type: "session_settled" },
 		]);
 	});
 
@@ -420,18 +496,20 @@ describe("routing and pool", () => {
 		expect(recall).toContain("pineapple");
 	});
 
-	test("abort ordering: agent_settled, then the abort response, then stdin closes", async () => {
-		const h = helper({
-			fake: { defaultScript: "abort", abortResponseDelayMs: 300 },
-		});
+	test("abort response, prompt_result, session_settled, then stdin closes", async () => {
+		const h = helper({ fake: { defaultScript: "abort" } });
 		await h.rpc(CHAT_A, prompt("r1", "write something [[long]]"));
 		await h.waitForRpc(CHAT_A, (rpc) => rpc.id === "r1", "accepted");
 		await h.rpc(CHAT_A, { id: "r2", type: "abort" });
 		await h.waitIdle();
-		const tail = h.rpcs(CHAT_A).slice(-2);
-		expect(tail).toEqual([
-			{ type: "session_settled", aborted: true },
+		expect(h.rpcs(CHAT_A).slice(-3)).toEqual([
 			{ id: "r2", type: "response", command: "abort", success: true },
+			expect.objectContaining({
+				type: "prompt_result",
+				status: "aborted",
+				sessionSettled: true,
+			}),
+			{ type: "session_settled" },
 		]);
 		const chatPid = h.chatSpawns(CHAT_A)[0]?.pid;
 		const events = h
@@ -442,15 +520,16 @@ describe("routing and pool", () => {
 					? "eof"
 					: `${entry.event}:${entry.record?.type}:${entry.record?.command ?? ""}`,
 			);
-		const settled = events.indexOf("stdout:session_settled:");
 		const response = events.indexOf("stdout:response:abort");
+		const result = events.indexOf("stdout:prompt_result:");
+		const settled = events.indexOf("stdout:session_settled:");
 		const eof = events.indexOf("eof");
-		expect(settled).toBeGreaterThan(0);
-		expect(response).toBeGreaterThan(settled);
-		expect(eof).toBeGreaterThan(response);
+		expect(result).toBeGreaterThan(response);
+		expect(settled).toBeGreaterThan(result);
+		expect(eof).toBeGreaterThan(settled);
 	});
 
-	test("get_messages on a reopened chat spawns pi and exits after the response", async () => {
+	test("get_messages on a reopened chat spawns omp and exits after the response", async () => {
 		const h = helper({ fake: { defaultScript: "abort-resume" } });
 		mkdirSync(join(h.paths.chats, CHAT_A), { recursive: true });
 		writeFileSync(
@@ -490,7 +569,7 @@ describe("routing and pool", () => {
 });
 
 describe("model list", () => {
-	test("answers from one short-lived pi when no chat runs, then from cache", async () => {
+	test("answers from one short-lived omp when no chat runs, then from cache", async () => {
 		const h = helper();
 		await h.rpc(CHAT_A, { id: "m1", type: "get_available_models" });
 		await h.rpc(CHAT_B, { id: "m2", type: "get_available_models" });
@@ -541,7 +620,7 @@ describe("helper commands", () => {
 		});
 	});
 
-	test("helper.hello with pi installed reports its version", async () => {
+	test("helper.hello with omp installed reports its version", async () => {
 		const h = helper();
 		await h.send({ type: "helper.hello", id: "h1", maxConcurrent: 3 });
 		expect(h.sent).toEqual([
@@ -586,7 +665,9 @@ describe("helper commands", () => {
 		);
 		await h.waitFor(
 			() =>
-				readFileSync(h.helperSession(CHAT_A), "utf8").includes("session_info"),
+				readFileSync(h.helperSession(CHAT_A), "utf8").startsWith(
+					'{"type":"title"',
+				),
 			"title written",
 		);
 		const b = helper({ home: h.home, fake: { title: null } });
@@ -671,13 +752,18 @@ describe("chat titles", () => {
 		);
 		await h.waitFor(
 			() =>
-				readFileSync(h.helperSession(CHAT_A), "utf8").includes("session_info"),
+				readFileSync(h.helperSession(CHAT_A), "utf8").startsWith(
+					'{"type":"title"',
+				),
 			"title written",
 		);
 		await h.waitIdle();
 		const titleSpawn = h.spawns((argv) => argv.includes("-p"));
 		expect(titleSpawn).toHaveLength(1);
 		expect(titleSpawn[0]?.argv).toContain("--model");
+		expect(titleSpawn[0]?.argv).toContain("--no-tools");
+		for (const flag of ISOLATION_FLAGS)
+			expect(titleSpawn[0]?.argv).toContain(flag);
 		const titlePrompt = titleSpawn[0]?.argv?.at(-1);
 		expect(titlePrompt).toContain("Page title: Fruit Facts");
 		expect(titlePrompt).toContain("Question: remember the word pineapple");
@@ -727,7 +813,9 @@ describe("chat titles", () => {
 		await h.waitIdle();
 		await h.waitFor(
 			() =>
-				readFileSync(h.helperSession(CHAT_A), "utf8").includes("session_info"),
+				readFileSync(h.helperSession(CHAT_A), "utf8").startsWith(
+					'{"type":"title"',
+				),
 			"title written",
 		);
 		const commands = h
@@ -756,7 +844,7 @@ describe("chat titles", () => {
 		);
 		await h.waitIdle();
 		expect(readFileSync(h.helperSession(CHAT_A), "utf8")).not.toContain(
-			"session_info",
+			'"type":"title"',
 		);
 		await h.send({ type: "chat.list", id: "l1" });
 		expect(h.sent.at(-1)).toMatchObject({

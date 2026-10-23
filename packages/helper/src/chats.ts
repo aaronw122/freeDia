@@ -109,9 +109,6 @@ export function readSession(file: string): SessionState {
 	let userMessages = 0;
 	let firstReplyTurn: number | undefined;
 	for (const entry of entries) {
-		if (entry.type === "session_info" && typeof entry.name === "string") {
-			name = entry.name;
-		}
 		if (
 			(entry.type === "title" || entry.type === "title_change") &&
 			typeof entry.title === "string" &&

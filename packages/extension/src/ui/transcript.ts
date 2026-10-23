@@ -139,7 +139,7 @@ export function toolLabel(toolName: string): string {
 	}
 }
 
-interface PiMessage {
+interface OmpMessage {
 	role: string;
 	content: unknown;
 	stopReason: unknown;
@@ -147,7 +147,7 @@ interface PiMessage {
 	provider: unknown;
 }
 
-function asMessage(value: unknown): PiMessage | null {
+function asMessage(value: unknown): OmpMessage | null {
 	const record = asRecord(value);
 	if (!record || typeof record.role !== "string") return null;
 	return {
@@ -174,7 +174,7 @@ function stringOrNull(value: unknown): string | null {
 	return typeof value === "string" ? value : null;
 }
 
-function segmentFromMessage(message: PiMessage): ReplySegment {
+function segmentFromMessage(message: OmpMessage): ReplySegment {
 	return {
 		parts: textParts(message.content),
 		stopReason: stringOrNull(message.stopReason),
@@ -310,7 +310,7 @@ function onAssistantEvent(
 
 function onMessageStart(
 	state: TranscriptState,
-	message: PiMessage,
+	message: OmpMessage,
 ): TranscriptState {
 	if (message.role !== "assistant") return state;
 	const next = withOpenReply(state, (turn) => ({
@@ -329,7 +329,7 @@ function onMessageStart(
 
 function onUserEcho(
 	state: TranscriptState,
-	message: PiMessage,
+	message: OmpMessage,
 ): TranscriptState {
 	const text = questionFromPrompt(textParts(message.content).join(""));
 	const pending = state.turns.flatMap((turn, index) =>
@@ -357,7 +357,7 @@ function onUserEcho(
 
 function onMessageEnd(
 	state: TranscriptState,
-	message: PiMessage,
+	message: OmpMessage,
 ): TranscriptState {
 	if (message.role === "user") return onUserEcho(state, message);
 	if (message.role !== "assistant") return state;
