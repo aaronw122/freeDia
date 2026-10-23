@@ -1,4 +1,4 @@
-import type { HelperError, PiRpcRecord } from "freedia/protocol";
+import type { HelperError, OmpRpcRecord } from "freedia/protocol";
 import type { ClientEvent } from "../client/types";
 import { asRecord } from "./records";
 
@@ -64,8 +64,8 @@ export type TranscriptAction =
 	| { type: "send"; text: string }
 	| { type: "send_failed"; message: string }
 	| { type: "reset"; chatId: string }
-	| { type: "loaded"; chatId: string; messages: PiRpcRecord[] }
-	| { type: "restored"; chatId: string; messages: PiRpcRecord[] }
+	| { type: "loaded"; chatId: string; messages: OmpRpcRecord[] }
+	| { type: "restored"; chatId: string; messages: OmpRpcRecord[] }
 	| { type: "failed"; title: string; message: string };
 
 const WAITING_PHASES: ReadonlySet<RunPhase> = new Set([
@@ -183,7 +183,7 @@ function segmentFromMessage(message: PiMessage): ReplySegment {
 	};
 }
 
-export function turnsFromMessages(messages: PiRpcRecord[]): Turn[] {
+export function turnsFromMessages(messages: OmpRpcRecord[]): Turn[] {
 	const turns: Turn[] = [];
 	messages.forEach((raw, index) => {
 		const message = asMessage(raw);
@@ -391,7 +391,7 @@ function settle(state: TranscriptState): TranscriptState {
 
 function onRetryStart(
 	state: TranscriptState,
-	record: PiRpcRecord,
+	record: OmpRpcRecord,
 ): TranscriptState {
 	const failed = openReply(state);
 	const provider = failed?.segments.at(-1)?.provider ?? state.retry?.provider;
@@ -418,7 +418,7 @@ function onRetryStart(
 
 function onRetryEnd(
 	state: TranscriptState,
-	record: PiRpcRecord,
+	record: OmpRpcRecord,
 ): TranscriptState {
 	const turn = openReply(state);
 	if (record.success !== false || (turn && replyFailure(turn))) {
@@ -440,7 +440,7 @@ function onRetryEnd(
 	return { ...next, retry: null };
 }
 
-function onRpc(state: TranscriptState, record: PiRpcRecord): TranscriptState {
+function onRpc(state: TranscriptState, record: OmpRpcRecord): TranscriptState {
 	switch (record.type) {
 		case "response":
 			if (record.command === "abort" && record.success === true) {

@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { PAGE_TTL_MS } from "../src/helper";
-import { ISOLATION_FLAGS } from "../src/pi";
+import { ISOLATION_FLAGS } from "../src/omp";
 import {
 	CHAT_A,
 	CHAT_B,
@@ -26,7 +26,7 @@ const homes: string[] = [];
 function helper(options: ConstructorParameters<typeof TestHelper>[0] = {}): H {
 	const h = new TestHelper({
 		...options,
-		env: { FREEDIA_PI_EXTRA_ARGS: FAUX, ...options.env },
+		env: { FREEDIA_OMP_EXTRA_ARGS: FAUX, ...options.env },
 		fake: { title: null, ...options.fake },
 	});
 	homes.push(h.home);
@@ -117,29 +117,28 @@ describe("pi launch", () => {
 				OPENAI_API_KEY: "sk-secret",
 				GITHUB_TOKEN: "ghp-secret",
 				FREEDIA_FAUX_TPS: "0",
-				FREEDIA_PI_EXTRA_ARGS: `-e /tmp/faux.ts ${FAUX}`,
+				FREEDIA_OMP_EXTRA_ARGS: `-e /tmp/faux.ts ${FAUX}`,
 			},
 		});
 		await h.rpc(CHAT_A, prompt("r1", "hello"));
 		await h.waitForRpc(
 			CHAT_A,
-			(rpc) => rpc.type === "agent_settled",
+			(rpc) => rpc.type === "session_settled",
 			"settled",
 		);
 		const [spawn] = h.chatSpawns(CHAT_A);
 		const argv = spawn?.argv ?? [];
-		expect(argv.slice(0, 7)).toEqual([
+		expect(argv.slice(0, 6)).toEqual([
 			"--mode",
 			"rpc",
-			"--session-dir",
-			h.paths.chats,
-			"--session-id",
-			CHAT_A,
+			"--no-ui",
+			"--cwd",
+			h.paths.root,
 			"--model",
 		]);
-		expect(argv[7]).toBe("faux/faux-1");
+		expect(argv[6]).toBe("faux/faux-1");
 		expect(argv).toContain("--tools");
-		expect(argv[argv.indexOf("--tools") + 1]).toBe("read,grep,find,ls");
+		expect(argv[argv.indexOf("--tools") + 1]).toBe("read,grep,glob");
 		for (const flag of ISOLATION_FLAGS) {
 			expect(argv).toContain(flag);
 		}
@@ -151,11 +150,11 @@ describe("pi launch", () => {
 		expect(realpathSync(spawn?.cwd ?? "")).toBe(realpathSync(h.paths.root));
 		const env = spawn?.env ?? {};
 		expect(Object.keys(env).filter((key) => /KEY|TOKEN/.test(key))).toEqual([]);
-		expect(env.HOME).toBe(h.home);
-		expect(env.PI_CODING_AGENT_DIR).toBe(h.paths.piAgent);
+		expect(env.HOME).toBe(h.paths.fakeHome);
+		expect(env.PI_CODING_AGENT_DIR).toBe(h.paths.ompAgent);
 		expect(env.BUN_BE_BUN).toBe("1");
 		expect(env.FREEDIA_FAUX_TPS).toBe("0");
-		expect(env.FREEDIA_PI_EXTRA_ARGS).toBeUndefined();
+		expect(env.FREEDIA_OMP_EXTRA_ARGS).toBeUndefined();
 	});
 
 	test("a resumed spawn passes the chat's own latest model and keeps its set_model choice", async () => {
@@ -172,7 +171,7 @@ describe("pi launch", () => {
 		await h.rpc(CHAT_A, prompt("r1", "first on faux-1"));
 		await h.waitForRpc(
 			CHAT_A,
-			(rpc) => rpc.type === "agent_settled",
+			(rpc) => rpc.type === "session_settled",
 			"first reply",
 		);
 		await h.waitIdle();
@@ -198,8 +197,8 @@ describe("pi launch", () => {
 			return at < 0 ? undefined : argv?.[at + 1];
 		};
 		expect(modelOf(spawns[0]?.argv)).toBe("faux/faux-1");
-		expect(modelOf(spawns[1]?.argv)).toBe("faux/faux-1");
-		expect(modelOf(spawns[2]?.argv)).toBe("faux/faux-2");
+		expect(modelOf(spawns[1]?.argv)).toBeUndefined();
+		expect(modelOf(spawns[2]?.argv)).toBeUndefined();
 		expect(state).toMatchObject({
 			success: true,
 			data: { model: { provider: "faux", id: "faux-2" } },
@@ -219,7 +218,7 @@ describe("pi launch", () => {
 		await h.rpc(CHAT_A, prompt("r2", "hello"));
 		await h.waitForRpc(
 			CHAT_A,
-			(rpc) => rpc.type === "agent_settled",
+			(rpc) => rpc.type === "session_settled",
 			"settled",
 		);
 		const second = h.chatSpawns(CHAT_A)[1]?.argv ?? [];
@@ -231,7 +230,7 @@ describe("pi launch", () => {
 		await h.rpc(CHAT_A, prompt("r1", "hello"));
 		await h.waitForRpc(
 			CHAT_A,
-			(rpc) => rpc.type === "agent_settled",
+			(rpc) => rpc.type === "session_settled",
 			"first reply",
 		);
 		await h.waitIdle();
@@ -263,7 +262,7 @@ describe("routing and pool", () => {
 		);
 		await h.rpc(CHAT_B, { id: "b2", type: "abort" });
 		await h.waitForRpc(CHAT_B, (rpc) => rpc.id === "b2", "B abort response");
-		expect(h.rpcs(CHAT_A).some((rpc) => rpc.type === "agent_settled")).toBe(
+		expect(h.rpcs(CHAT_A).some((rpc) => rpc.type === "session_settled")).toBe(
 			false,
 		);
 		await h.rpc(CHAT_A, { id: "a2", type: "abort" });
@@ -292,7 +291,7 @@ describe("routing and pool", () => {
 		await h.rpc(CHAT_A, prompt("r2", "hello from freeDia"));
 		await h.waitForRpc(
 			CHAT_A,
-			(rpc) => rpc.type === "agent_settled",
+			(rpc) => rpc.type === "session_settled",
 			"settled",
 		);
 		const emitted = h
@@ -360,7 +359,7 @@ describe("routing and pool", () => {
 		await h.rpc(CHAT_B, { id: "b2", type: "abort" });
 		await h.waitIdle();
 		expect(h.rpcs(CHAT_B).slice(-2)).toEqual([
-			{ type: "agent_settled", aborted: true },
+			{ type: "session_settled", aborted: true },
 			{ id: "b2", type: "response", command: "abort", success: true },
 		]);
 	});
@@ -372,25 +371,25 @@ describe("routing and pool", () => {
 		await h.rpc(CHAT_A, prompt("r1", "remember the word pineapple"));
 		await h.waitForRpc(
 			CHAT_A,
-			(rpc) => rpc.type === "agent_settled",
+			(rpc) => rpc.type === "session_settled",
 			"first settled",
 		);
 		await h.waitIdle();
 		const firstPid = h.chatSpawns(CHAT_A)[0]?.pid;
 		const log = h.fakeLog().filter((entry) => entry.pid === firstPid);
 		expect(log.at(-1)?.event).toBe("eof");
-		expect(log.at(-2)?.record?.type).toBe("agent_settled");
+		expect(log.at(-2)?.record?.type).toBe("session_settled");
 		await h.rpc(CHAT_A, prompt("r2", "what word? [[recall]]"));
 		await h.waitFor(
 			() =>
-				h.rpcs(CHAT_A).filter((rpc) => rpc.type === "agent_settled").length ===
-				2,
+				h.rpcs(CHAT_A).filter((rpc) => rpc.type === "session_settled")
+					.length === 2,
 			"second settled",
 		);
 		const spawns = h.chatSpawns(CHAT_A);
 		expect(spawns).toHaveLength(2);
 		const resumed = spawns[1]?.argv ?? [];
-		expect(resumed[resumed.indexOf("--model") + 1]).toBe("faux/faux-1");
+		expect(resumed).not.toContain("--model");
 		const recall = h
 			.rpcs(CHAT_A)
 			.filter((rpc) => rpc.type === "message_end")
@@ -409,7 +408,7 @@ describe("routing and pool", () => {
 		await h.waitIdle();
 		const tail = h.rpcs(CHAT_A).slice(-2);
 		expect(tail).toEqual([
-			{ type: "agent_settled", aborted: true },
+			{ type: "session_settled", aborted: true },
 			{ id: "r2", type: "response", command: "abort", success: true },
 		]);
 		const chatPid = h.chatSpawns(CHAT_A)[0]?.pid;
@@ -421,7 +420,7 @@ describe("routing and pool", () => {
 					? "eof"
 					: `${entry.event}:${entry.record?.type}:${entry.record?.command ?? ""}`,
 			);
-		const settled = events.indexOf("stdout:agent_settled:");
+		const settled = events.indexOf("stdout:session_settled:");
 		const response = events.indexOf("stdout:response:abort");
 		const eof = events.indexOf("eof");
 		expect(settled).toBeGreaterThan(0);
@@ -490,16 +489,21 @@ describe("model list", () => {
 });
 
 describe("helper commands", () => {
-	test("helper.hello reports versions and pi_missing when pi is absent", async () => {
-		const h = helper({ piVersion: false });
+	test("helper.hello reports versions and omp_missing when omp is absent", async () => {
+		const h = helper({ ompVersion: false });
 		await h.send({ type: "helper.hello", id: "h1", maxConcurrent: 2 });
 		expect(h.sent).toEqual([
-			{ type: "helper.hello", id: "h1", helperVersion: "9.9.9", piVersion: "" },
+			{
+				type: "helper.hello",
+				id: "h1",
+				helperVersion: "9.9.9",
+				ompVersion: "",
+			},
 			{
 				type: "helper.error",
-				code: "pi_missing",
-				message: "pi is not installed in ~/.freedia/pi.",
-				fix: "Run `bunx freedia install` in Terminal to reinstall the helper and pi.",
+				code: "omp_missing",
+				message: "omp is not installed in ~/.freedia/omp.",
+				fix: "Run `bunx freedia install` in Terminal to reinstall the helper and omp.",
 			},
 		]);
 		await h.rpc(CHAT_A, prompt("r1", "hi"));
@@ -507,7 +511,7 @@ describe("helper commands", () => {
 			type: "helper.error",
 			id: "r1",
 			chatId: CHAT_A,
-			code: "pi_missing",
+			code: "omp_missing",
 		});
 	});
 
@@ -519,14 +523,14 @@ describe("helper commands", () => {
 				type: "helper.hello",
 				id: "h1",
 				helperVersion: "9.9.9",
-				piVersion: "1.3.0",
+				ompVersion: "18.12.1",
 			},
 		]);
 	});
 
 	test("not signed in to the chat's provider answers not_signed_in with fix text", async () => {
 		const h = helper({
-			env: { FREEDIA_PI_EXTRA_ARGS: "--model anthropic/claude-sonnet-4-5" },
+			env: { FREEDIA_OMP_EXTRA_ARGS: "--model anthropic/claude-sonnet-4-5" },
 			fake: { auth: { anthropic: "not_ready" } },
 		});
 		await h.rpc(CHAT_A, prompt("r1", "hi"));
@@ -535,8 +539,8 @@ describe("helper commands", () => {
 			id: "r1",
 			chatId: CHAT_A,
 			code: "not_signed_in",
-			message: "Not signed in to anthropic.",
-			fix: "Run `bunx freedia login` in Terminal and sign in to anthropic.",
+			message: "Not signed in to a provider.",
+			fix: "Run `bunx freedia login` in Terminal and sign in.",
 		});
 		expect(h.chatSpawns(CHAT_A)).toHaveLength(0);
 	});
@@ -551,7 +555,7 @@ describe("helper commands", () => {
 		);
 		await h.waitForRpc(
 			CHAT_A,
-			(rpc) => rpc.type === "agent_settled",
+			(rpc) => rpc.type === "session_settled",
 			"A settled",
 		);
 		await h.waitFor(
@@ -569,7 +573,7 @@ describe("helper commands", () => {
 		);
 		await b.waitForRpc(
 			CHAT_B,
-			(rpc) => rpc.type === "agent_settled",
+			(rpc) => rpc.type === "session_settled",
 			"B settled",
 		);
 		await b.waitIdle();
@@ -636,7 +640,7 @@ describe("chat titles", () => {
 		);
 		await h.waitForRpc(
 			CHAT_A,
-			(rpc) => rpc.type === "agent_settled",
+			(rpc) => rpc.type === "session_settled",
 			"settled",
 		);
 		await h.waitFor(
@@ -686,14 +690,14 @@ describe("chat titles", () => {
 		await h.rpc(CHAT_A, prompt("r1", "first"));
 		await h.waitForRpc(
 			CHAT_A,
-			(rpc) => rpc.type === "agent_settled",
+			(rpc) => rpc.type === "session_settled",
 			"settled",
 		);
 		await h.rpc(CHAT_A, prompt("r2", "second"));
 		await h.waitFor(
 			() =>
-				h.rpcs(CHAT_A).filter((rpc) => rpc.type === "agent_settled").length ===
-				2,
+				h.rpcs(CHAT_A).filter((rpc) => rpc.type === "session_settled")
+					.length === 2,
 			"second settled",
 		);
 		await h.waitIdle();
@@ -727,7 +731,7 @@ describe("chat titles", () => {
 		await h.rpc(CHAT_A, prompt("r1", "how do pineapples grow"));
 		await h.waitForRpc(
 			CHAT_A,
-			(rpc) => rpc.type === "agent_settled",
+			(rpc) => rpc.type === "session_settled",
 			"settled",
 		);
 		await h.waitFor(
@@ -808,7 +812,7 @@ describe("shutdown", () => {
 		await h.rpc(CHAT_A, prompt("r1", "hello"));
 		await h.waitForRpc(CHAT_A, (rpc) => rpc.id === "r1", "accepted");
 		await h.helper.shutdown();
-		expect(h.rpcs(CHAT_A).some((rpc) => rpc.type === "agent_settled")).toBe(
+		expect(h.rpcs(CHAT_A).some((rpc) => rpc.type === "session_settled")).toBe(
 			true,
 		);
 		expect(h.helper.runningChats()).toEqual([]);

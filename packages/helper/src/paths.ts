@@ -1,17 +1,18 @@
 import { join } from "node:path";
 import { NATIVE_HOST_NAME } from "./protocol";
 
-export const PI_PACKAGE = "@earendil-works/pi-coding-agent";
+export const OMP_PACKAGE = "@oh-my-pi/pi-coding-agent";
 
 export interface FreediaPaths {
 	home: string;
 	root: string;
 	chats: string;
 	pages: string;
-	piDir: string;
-	piPackage: string;
-	piCli: string;
-	piAgent: string;
+	ompDir: string;
+	ompPackage: string;
+	ompCli: string;
+	ompAgent: string;
+	fakeHome: string;
 	bin: string;
 	binary: string;
 	updateState: string;
@@ -22,8 +23,8 @@ export interface FreediaPaths {
 
 export function freediaPaths(home: string): FreediaPaths {
 	const root = join(home, ".freedia");
-	const piDir = join(root, "pi");
-	const piPackage = join(piDir, "node_modules", PI_PACKAGE);
+	const ompDir = join(root, "omp");
+	const ompPackage = join(ompDir, "node_modules", OMP_PACKAGE);
 	const bin = join(root, "bin");
 	const chrome = join(
 		home,
@@ -38,10 +39,11 @@ export function freediaPaths(home: string): FreediaPaths {
 		root,
 		chats: join(root, "chats"),
 		pages: join(root, "pages"),
-		piDir,
-		piPackage,
-		piCli: join(piPackage, "dist", "bundle", "cli.js"),
-		piAgent: join(root, "pi-agent"),
+		ompDir,
+		ompPackage,
+		ompCli: join(ompPackage, "dist", "cli.js"),
+		ompAgent: join(root, "omp-agent"),
+		fakeHome: join(root, "home"),
 		bin,
 		binary: join(bin, "freedia-helper"),
 		updateState: join(root, "update.json"),

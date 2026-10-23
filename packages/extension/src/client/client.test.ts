@@ -422,7 +422,7 @@ describe("chat client commands", () => {
 		worker.helper({ type: "chat.status", chatId: CHAT_A, state: "starting" });
 		worker.helper({
 			type: "helper.error",
-			code: "pi_missing",
+			code: "omp_missing",
 			message: "m",
 			fix: "f",
 		});
@@ -440,7 +440,7 @@ describe("chat client commands", () => {
 			type: "helper_error",
 			error: {
 				type: "helper.error",
-				code: "pi_missing",
+				code: "omp_missing",
 				message: "m",
 				fix: "f",
 			},

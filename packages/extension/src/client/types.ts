@@ -2,7 +2,7 @@ import type {
 	ChatState,
 	ChatSummary,
 	HelperError,
-	PiRpcRecord,
+	OmpRpcRecord,
 } from "freedia/protocol";
 
 export interface Quote {
@@ -25,7 +25,7 @@ export type PageReadability = "readable" | "unreadable";
 export type ConnectionState = "connecting" | "connected" | "helper_missing";
 
 export type ClientEvent =
-	| { type: "rpc"; chatId: string; rpc: PiRpcRecord }
+	| { type: "rpc"; chatId: string; rpc: OmpRpcRecord }
 	| { type: "status"; chatId: string; state: ChatState }
 	| { type: "helper_error"; error: HelperError }
 	| { type: "connection"; state: ConnectionState }
@@ -52,7 +52,7 @@ export interface ChatClient {
 	setModel(model: ModelRef): Promise<void>;
 
 	listChats(): Promise<ChatSummary[]>;
-	openChat(chatId: string): Promise<PiRpcRecord[]>;
+	openChat(chatId: string): Promise<OmpRpcRecord[]>;
 	deleteChat(chatId: string): Promise<void>;
 
 	subscribe(listener: ClientListener): () => void;

@@ -9,10 +9,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Helper, type HelperOptions } from "../src/helper";
+import { type OmpConfig, ompConfigFromEnv } from "../src/omp";
 import { type FreediaPaths, freediaPaths } from "../src/paths";
-import { type PiConfig, piConfigFromEnv } from "../src/pi";
-import type { PiRpcRecord } from "../src/protocol";
-import type { FakePiConfig } from "./fake-pi";
+import type { OmpRpcRecord } from "../src/protocol";
+import type { FakeOmpConfig } from "./fake-omp";
 
 export const CHAT_A = "3f2a9c1e-8b4d-4e6f-a0b1-c2d3e4f5a6b7";
 export const CHAT_B = "7d1e2f3a-4b5c-4d6e-8f70-8192a3b4c5d6";
@@ -24,48 +24,46 @@ export interface FakeLogEntry {
 	argv?: string[];
 	env?: Record<string, string>;
 	cwd?: string;
-	record?: PiRpcRecord;
+	record?: OmpRpcRecord;
 }
-
 export interface Sent {
 	type?: string;
 	id?: string;
 	chatId?: string;
 	state?: string;
-	rpc?: PiRpcRecord;
+	rpc?: OmpRpcRecord;
 	[key: string]: unknown;
 }
-
 export function tempHome(): string {
 	return mkdtempSync(join(tmpdir(), "freedia-test-"));
 }
 
-export function installFakePi(paths: FreediaPaths, version = "1.3.0"): void {
-	mkdirSync(join(paths.piPackage, "dist", "bundle"), { recursive: true });
+export function installFakeOmp(paths: FreediaPaths, version = "18.12.1"): void {
+	mkdirSync(join(paths.ompPackage, "dist"), { recursive: true });
 	writeFileSync(
-		join(paths.piPackage, "package.json"),
-		JSON.stringify({ name: "@earendil-works/pi-coding-agent", version }),
+		join(paths.ompPackage, "package.json"),
+		JSON.stringify({ name: "@oh-my-pi/pi-coding-agent", version }),
 	);
 	writeFileSync(
-		paths.piCli,
-		`import ${JSON.stringify(join(import.meta.dir, "fake-pi.ts"))};\n`,
+		paths.ompCli,
+		`import ${JSON.stringify(join(import.meta.dir, "fake-omp.ts"))};\n`,
 	);
 }
 
 export class TestHelper {
 	readonly home: string;
 	readonly paths: FreediaPaths;
-	readonly pi: PiConfig;
+	readonly omp: OmpConfig;
 	readonly sent: Sent[] = [];
 	readonly logs: string[] = [];
-	readonly piInstalls: string[] = [];
+	readonly ompInstalls: string[] = [];
 	readonly helper: Helper;
 
 	constructor(
 		options: {
-			fake?: FakePiConfig;
+			fake?: FakeOmpConfig;
 			env?: Record<string, string>;
-			piVersion?: string | false;
+			ompVersion?: string | false;
 			helper?: Partial<HelperOptions>;
 			home?: string;
 			onMessage?: (message: Sent, harness: TestHelper) => void;
@@ -73,26 +71,27 @@ export class TestHelper {
 	) {
 		this.home = options.home ?? tempHome();
 		this.paths = freediaPaths(this.home);
-		if (options.piVersion !== false) {
-			installFakePi(this.paths, options.piVersion ?? "1.3.0");
-		}
+		mkdirSync(this.paths.fakeHome, { recursive: true });
+		if (options.ompVersion !== false)
+			installFakeOmp(this.paths, options.ompVersion ?? "18.12.1");
 		writeFileSync(
-			join(this.home, "fake-pi.json"),
+			join(this.paths.fakeHome, "fake-omp.json"),
 			JSON.stringify(options.fake ?? {}),
+			{ flush: true },
 		);
-		this.pi = piConfigFromEnv(
+		this.omp = ompConfigFromEnv(
 			this.paths,
 			{ PATH: process.env.PATH ?? "", ...options.env },
 			process.execPath,
 		);
 		this.helper = new Helper({
 			paths: this.paths,
-			pi: this.pi,
+			omp: this.omp,
 			helperVersion: "9.9.9",
-			pinnedPiVersion: "1.3.0",
-			installPi: async (version) => {
-				this.piInstalls.push(version);
-				installFakePi(this.paths, version);
+			pinnedOmpVersion: "18.12.1",
+			installOmp: async (version) => {
+				this.ompInstalls.push(version);
+				installFakeOmp(this.paths, version);
 			},
 			log: (line) => this.logs.push(line),
 			output: {
@@ -107,21 +106,17 @@ export class TestHelper {
 			...options.helper,
 		});
 	}
-
 	send(message: unknown): Promise<void> {
 		return this.helper.handle(message);
 	}
-
-	rpc(chatId: string, rpc: PiRpcRecord): Promise<void> {
+	rpc(chatId: string, rpc: OmpRpcRecord): Promise<void> {
 		return this.helper.handle({ chatId, rpc });
 	}
-
-	rpcs(chatId: string): PiRpcRecord[] {
+	rpcs(chatId: string): OmpRpcRecord[] {
 		return this.sent
 			.filter((message) => "rpc" in message && message.chatId === chatId)
-			.map((message) => message.rpc as PiRpcRecord);
+			.map((message) => message.rpc as OmpRpcRecord);
 	}
-
 	async waitFor<T>(
 		find: () => T | undefined | false,
 		label: string,
@@ -129,57 +124,49 @@ export class TestHelper {
 	): Promise<T> {
 		const deadline = Date.now() + timeoutMs;
 		while (Date.now() < deadline) {
-			const found = find();
-			if (found !== undefined && found !== false) {
-				return found;
-			}
+			try {
+				const found = find();
+				if (found !== undefined && found !== false) return found;
+			} catch {}
 			await Bun.sleep(10);
 		}
 		throw new Error(
-			`timed out waiting for ${label}; sent=${JSON.stringify(this.sent.map((m) => ("rpc" in m ? m.rpc?.type : m.type)))} logs=${this.logs.join(" | ")}`,
+			`timed out waiting for ${label}; sent=${JSON.stringify(this.sent)}`,
 		);
 	}
-
 	waitForRpc(
 		chatId: string,
-		match: (rpc: PiRpcRecord) => boolean,
+		match: (rpc: OmpRpcRecord) => boolean,
 		label: string,
 	) {
 		return this.waitFor(() => this.rpcs(chatId).find(match), label);
 	}
-
 	async waitIdle(): Promise<void> {
 		await this.helper.whenIdle();
 	}
-
 	helperSession(chatId: string): string {
-		const name = readdirSync(this.paths.chats).find((file) =>
-			file.endsWith(`_${chatId}.jsonl`),
-		);
-		if (name === undefined) {
-			throw new Error(`no session file for ${chatId}`);
-		}
-		return join(this.paths.chats, name);
+		const directory = join(this.paths.chats, chatId);
+		const name = readdirSync(directory).find((file) => file.endsWith(".jsonl"));
+		if (name === undefined) throw new Error(`no session file for ${chatId}`);
+		return join(directory, name);
 	}
-
 	fakeLog(): FakeLogEntry[] {
-		const file = join(this.home, "fake-pi-log.jsonl");
-		if (!existsSync(file)) {
-			return [];
-		}
+		const file = join(this.paths.fakeHome, "fake-omp-log.jsonl");
+		if (!existsSync(file)) return [];
 		return readFileSync(file, "utf8")
 			.trim()
 			.split("\n")
+			.filter(Boolean)
 			.map((line) => JSON.parse(line));
 	}
-
 	spawns(filter: (argv: string[]) => boolean = () => true): FakeLogEntry[] {
 		return this.fakeLog().filter(
 			(entry) => entry.event === "spawn" && filter(entry.argv ?? []),
 		);
 	}
-
 	chatSpawns(chatId: string): FakeLogEntry[] {
-		return this.spawns((argv) => argv.includes(chatId));
+		return this.spawns().filter(
+			(entry) => entry.record?.sessionDir === join(this.paths.chats, chatId),
+		);
 	}
 }

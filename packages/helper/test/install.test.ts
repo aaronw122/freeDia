@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
 	existsSync,
+	mkdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
@@ -13,12 +14,12 @@ import {
 	extensionIdsFrom,
 	type InstallContext,
 	install,
-	PI_VERSION,
+	OMP_VERSION,
 	uninstall,
 } from "../src/install";
+import { ompConfigFromEnv } from "../src/omp";
 import { freediaPaths } from "../src/paths";
-import { piConfigFromEnv } from "../src/pi";
-import { installFakePi, tempHome } from "./harness";
+import { installFakeOmp, tempHome } from "./harness";
 
 const STORE_ID = "abcdefghijklmnopabcdefghijklmnop";
 const homes: string[] = [];
@@ -33,17 +34,18 @@ function context(overrides: Partial<InstallContext> = {}) {
 	const home = tempHome();
 	homes.push(home);
 	const paths = freediaPaths(home);
+	mkdirSync(paths.fakeHome, { recursive: true });
 	const source = join(home, "source-helper");
 	writeFileSync(source, "#!/bin/sh\necho helper\n");
 	writeFileSync(
-		join(home, "fake-pi.json"),
+		join(paths.fakeHome, "fake-omp.json"),
 		JSON.stringify({ auth: { anthropic: "ready" } }),
 	);
 	const lines: string[] = [];
 	const installs: string[] = [];
 	const ctx: InstallContext = {
 		paths,
-		pi: piConfigFromEnv(
+		omp: ompConfigFromEnv(
 			paths,
 			{ PATH: process.env.PATH ?? "" },
 			process.execPath,
@@ -52,9 +54,9 @@ function context(overrides: Partial<InstallContext> = {}) {
 		storeExtensionId: undefined,
 		sourceBinary: source,
 		print: (line) => lines.push(line),
-		installPi: async (target, version) => {
+		installOmp: async (target, version) => {
 			installs.push(version);
-			installFakePi(target, version);
+			installFakeOmp(target, version);
 		},
 		signIn: undefined,
 		openUrl: undefined,
@@ -88,8 +90,8 @@ describe("freedia install", () => {
 		});
 		expect(readFileSync(paths.binary, "utf8")).toBe("#!/bin/sh\necho helper\n");
 		expect(statSync(paths.binary).mode & 0o111).toBe(0o111);
-		expect(installs).toEqual([PI_VERSION]);
-		expect(PI_VERSION).toBe("1.3.0");
+		expect(installs).toEqual([OMP_VERSION]);
+		expect(OMP_VERSION).toBe("18.12.1");
 		expect(
 			existsSync(join(home, "Library", "Application Support", "Dia")),
 		).toBe(false);
@@ -99,7 +101,7 @@ describe("freedia install", () => {
 		const { ctx, installs, paths } = context();
 		await install(ctx);
 		await install(ctx);
-		expect(installs).toEqual([PI_VERSION]);
+		expect(installs).toEqual([OMP_VERSION]);
 		expect(
 			JSON.parse(readFileSync(paths.nativeHostManifest, "utf8"))
 				.allowed_origins,
@@ -160,12 +162,12 @@ describe("freedia install", () => {
 describe("freedia doctor and uninstall", () => {
 	test("doctor fails before install and passes after", async () => {
 		const { ctx, paths } = context();
-		const before = await doctor(paths, ctx.pi, ctx.extensionIds);
+		const before = await doctor(paths, ctx.omp, ctx.extensionIds);
 		expect(
 			before.filter((check) => !check.ok).map((check) => check.name),
-		).toEqual(["helper binary", "native host manifest", "pi"]);
+		).toEqual(["helper binary", "native host manifest", "omp"]);
 		await install(ctx);
-		const after = await doctor(paths, ctx.pi, ctx.extensionIds);
+		const after = await doctor(paths, ctx.omp, ctx.extensionIds);
 		expect(after.map((check) => [check.name, check.ok])).toEqual([
 			["helper binary", true],
 			["native host manifest", true],
@@ -178,7 +180,7 @@ describe("freedia doctor and uninstall", () => {
 	test("doctor flags a manifest missing an extension origin", async () => {
 		const { ctx, paths } = context();
 		await install(ctx);
-		const checks = await doctor(paths, ctx.pi, [DEV_EXTENSION_ID, STORE_ID]);
+		const checks = await doctor(paths, ctx.omp, [DEV_EXTENSION_ID, STORE_ID]);
 		expect(
 			checks.find((check) => check.name === "native host manifest"),
 		).toEqual({
@@ -195,9 +197,9 @@ describe("freedia doctor and uninstall", () => {
 		uninstall(ctx, false);
 		expect(existsSync(paths.nativeHostManifest)).toBe(false);
 		expect(existsSync(paths.binary)).toBe(false);
-		expect(existsSync(paths.piDir)).toBe(false);
+		expect(existsSync(paths.ompDir)).toBe(false);
 		expect(existsSync(join(paths.chats, "x.jsonl"))).toBe(true);
-		expect(existsSync(paths.piAgent)).toBe(true);
+		expect(existsSync(paths.ompAgent)).toBe(true);
 		uninstall(ctx, true);
 		expect(existsSync(paths.root)).toBe(false);
 	});

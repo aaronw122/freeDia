@@ -206,14 +206,14 @@ describe("relay", () => {
 		native().emit({ type: "chat.list", id: "list-1", chats: [] });
 		native().emit({
 			type: "helper.error",
-			code: "pi_missing",
+			code: "omp_missing",
 			message: "pi is missing",
 			fix: "Run bunx freedia install",
 		});
 		expect(tabA.helperMessages()).toEqual([
 			{
 				type: "helper.error",
-				code: "pi_missing",
+				code: "omp_missing",
 				message: "pi is missing",
 				fix: "Run bunx freedia install",
 			},
@@ -222,7 +222,7 @@ describe("relay", () => {
 			{ type: "chat.list", id: "list-1", chats: [] },
 			{
 				type: "helper.error",
-				code: "pi_missing",
+				code: "omp_missing",
 				message: "pi is missing",
 				fix: "Run bunx freedia install",
 			},

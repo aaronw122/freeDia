@@ -3,7 +3,7 @@ import type {
 	ExtensionToHelper,
 	ForwardedRpcType,
 	HelperToExtension,
-	PiRpcRecord,
+	OmpRpcRecord,
 } from "freedia/protocol";
 import { MAX_PAGE_BYTES } from "freedia/protocol";
 import type { TabToWorker, WorkerToTab } from "../lib/messages";
@@ -241,13 +241,13 @@ export class RealChatClient implements ChatClient {
 		return reply.chats as ChatSummary[];
 	}
 
-	async openChat(chatId: string): Promise<PiRpcRecord[]> {
+	async openChat(chatId: string): Promise<OmpRpcRecord[]> {
 		await this.ready;
 		if (chatId !== this.chatId) {
 			await this.switchChat({ type: "tab.openChat", chatId });
 		}
 		const data = await this.rpc(chatId, { type: "get_messages" });
-		return (data.messages ?? []) as PiRpcRecord[];
+		return (data.messages ?? []) as OmpRpcRecord[];
 	}
 
 	async deleteChat(chatId: string): Promise<void> {

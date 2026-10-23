@@ -2,20 +2,17 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { splitLines } from "./framing";
 import { type FreediaPaths, pageFile } from "./paths";
-import type { PiRpcRecord } from "./protocol";
+import type { OmpRpcRecord } from "./protocol";
 
-export const READ_ONLY_TOOLS = "read,grep,find,ls";
-
+export const READ_ONLY_TOOLS = "read,grep,glob";
 export const ISOLATION_FLAGS = [
 	"--no-extensions",
 	"--no-skills",
-	"--no-prompt-templates",
-	"--no-context-files",
-	"--no-mcp",
-	"--no-themes",
+	"--no-rules",
+	"--no-lsp",
 ];
 
-export interface PiConfig {
+export interface OmpConfig {
 	paths: FreediaPaths;
 	execPath: string;
 	extraArgs: string[];
@@ -42,34 +39,32 @@ export function parseExtraArgs(raw: string | undefined): {
 	return { extraArgs, defaultModel };
 }
 
-export function piConfigFromEnv(
+export function ompConfigFromEnv(
 	paths: FreediaPaths,
 	env: Record<string, string | undefined>,
 	execPath: string,
-): PiConfig {
+): OmpConfig {
 	const passEnv: Record<string, string> = {};
 	for (const [key, value] of Object.entries(env)) {
 		if (key.startsWith("FREEDIA_FAUX_") && value !== undefined) {
 			passEnv[key] = value;
 		}
 	}
-	if (env.PATH !== undefined) {
-		passEnv.PATH = env.PATH;
-	}
+	if (env.PATH !== undefined) passEnv.PATH = env.PATH;
 	return {
 		paths,
 		execPath,
 		passEnv,
-		...parseExtraArgs(env.FREEDIA_PI_EXTRA_ARGS),
+		...parseExtraArgs(env.FREEDIA_OMP_EXTRA_ARGS),
 	};
 }
 
-export function piEnv(config: PiConfig): Record<string, string> {
+export function ompEnv(config: OmpConfig): Record<string, string> {
 	return {
 		PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
 		...config.passEnv,
-		HOME: config.paths.home,
-		PI_CODING_AGENT_DIR: config.paths.piAgent,
+		HOME: config.paths.fakeHome,
+		PI_CODING_AGENT_DIR: config.paths.ompAgent,
 		BUN_BE_BUN: "1",
 	};
 }
@@ -85,19 +80,18 @@ export function systemRules(paths: FreediaPaths, chatId: string): string {
 }
 
 export function chatLaunchArgs(
-	config: PiConfig,
+	config: OmpConfig,
 	chatId: string,
 	model: string | undefined,
 ): string[] {
 	return [
 		config.execPath,
-		config.paths.piCli,
+		config.paths.ompCli,
 		"--mode",
 		"rpc",
-		"--session-dir",
-		config.paths.chats,
-		"--session-id",
-		chatId,
+		"--no-ui",
+		"--cwd",
+		config.paths.root,
 		...(model === undefined ? [] : ["--model", model]),
 		"--tools",
 		READ_ONLY_TOOLS,
@@ -108,31 +102,45 @@ export function chatLaunchArgs(
 	];
 }
 
-export function oneShotArgs(
-	config: PiConfig,
-	model: string | undefined,
-): string[] {
+export function rpcOneShotArgs(config: OmpConfig): string[] {
 	return [
 		config.execPath,
-		config.paths.piCli,
+		config.paths.ompCli,
 		"--mode",
 		"rpc",
+		"--no-ui",
+		"--cwd",
+		config.paths.root,
 		"--no-session",
-		...(model === undefined ? [] : ["--model", model]),
-		"--no-tools",
 		...ISOLATION_FLAGS,
 		...config.extraArgs,
 	];
 }
 
-export function piInstalled(paths: FreediaPaths): boolean {
-	return existsSync(paths.piCli);
+export function titleArgs(
+	config: OmpConfig,
+	model: string | undefined,
+	prompt: string,
+): string[] {
+	return [
+		config.execPath,
+		config.paths.ompCli,
+		"-p",
+		"--no-session",
+		"--no-title",
+		...(model === undefined ? [] : ["--model", model]),
+		prompt,
+	];
 }
 
-export function piVersion(paths: FreediaPaths): string {
+export function ompInstalled(paths: FreediaPaths): boolean {
+	return existsSync(paths.ompCli);
+}
+
+export function ompVersion(paths: FreediaPaths): string {
 	try {
 		const pkg = JSON.parse(
-			readFileSync(join(paths.piPackage, "package.json"), "utf8"),
+			readFileSync(join(paths.ompPackage, "package.json"), "utf8"),
 		);
 		return typeof pkg.version === "string" ? pkg.version : "";
 	} catch {
@@ -140,13 +148,14 @@ export function piVersion(paths: FreediaPaths): string {
 	}
 }
 
-export type PiProcess = Bun.Subprocess<"pipe", "pipe", "pipe">;
+export type OmpProcess = Bun.Subprocess<"pipe", "pipe", "pipe">;
 
-export function spawnPi(config: PiConfig, cmd: string[]): PiProcess {
+export function spawnOmp(config: OmpConfig, cmd: string[]): OmpProcess {
 	mkdirSync(config.paths.root, { recursive: true });
+	mkdirSync(config.paths.fakeHome, { recursive: true });
 	return Bun.spawn(cmd, {
 		cwd: config.paths.root,
-		env: piEnv(config),
+		env: ompEnv(config),
 		stdin: "pipe",
 		stdout: "pipe",
 		stderr: "pipe",
@@ -154,31 +163,26 @@ export function spawnPi(config: PiConfig, cmd: string[]): PiProcess {
 }
 
 export async function runOneShot(
-	config: PiConfig,
-	model: string | undefined,
-	command: PiRpcRecord,
-	until: (record: PiRpcRecord) => boolean,
+	config: OmpConfig,
+	command: OmpRpcRecord,
+	until: (record: OmpRpcRecord) => boolean,
 	timeoutMs: number,
-): Promise<PiRpcRecord[]> {
-	const proc = spawnPi(config, oneShotArgs(config, model));
-	const records: PiRpcRecord[] = [];
+): Promise<OmpRpcRecord[]> {
+	const proc = spawnOmp(config, rpcOneShotArgs(config));
+	const records: OmpRpcRecord[] = [];
 	let finish: () => void = () => {};
 	const done = new Promise<void>((resolve) => {
 		finish = resolve;
 	});
 	const lines = splitLines((line) => {
 		try {
-			const record = JSON.parse(line) as PiRpcRecord;
+			const record = JSON.parse(line) as OmpRpcRecord;
 			records.push(record);
-			if (until(record)) {
-				finish();
-			}
+			if (until(record)) finish();
 		} catch {}
 	});
 	const reading = (async () => {
-		for await (const chunk of proc.stdout) {
-			lines.push(chunk);
-		}
+		for await (const chunk of proc.stdout) lines.push(chunk);
 		lines.end();
 		finish();
 	})();
@@ -197,48 +201,19 @@ export async function runOneShot(
 	return records;
 }
 
-export type AuthStatus = "ready" | "not_ready" | "invalid" | "unknown";
-
-export async function authCheck(
-	config: PiConfig,
-	provider: string,
-): Promise<{ status: AuthStatus; reason: string }> {
-	const proc = Bun.spawn(
-		[
-			config.execPath,
-			config.paths.piCli,
-			"auth",
-			"check",
-			"--provider",
-			provider,
-			"--json",
-		],
-		{
-			cwd: config.paths.root,
-			env: piEnv(config),
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-		},
-	);
-	const [out] = await Promise.all([
+export async function runTitle(
+	config: OmpConfig,
+	model: string | undefined,
+	prompt: string,
+	timeoutMs: number,
+): Promise<string | undefined> {
+	const proc = spawnOmp(config, titleArgs(config, model, prompt));
+	const timer = setTimeout(() => proc.kill(), timeoutMs);
+	const [stdout, , code] = await Promise.all([
 		new Response(proc.stdout).text(),
 		new Response(proc.stderr).text(),
 		proc.exited,
 	]);
-	try {
-		const result = JSON.parse(out.trim());
-		const reason = typeof result.reason === "string" ? result.reason : "";
-		if (reason === "provider_not_found") {
-			return { status: "unknown", reason };
-		}
-		if (
-			result.status === "ready" ||
-			result.status === "not_ready" ||
-			result.status === "invalid"
-		) {
-			return { status: result.status, reason };
-		}
-	} catch {}
-	return { status: "unknown", reason: "" };
+	clearTimeout(timer);
+	return code === 0 ? stdout.trim() : undefined;
 }

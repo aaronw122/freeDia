@@ -557,9 +557,9 @@ describe("errors", () => {
 	});
 
 	const helperFixes: Record<HelperErrorCode, [string, string]> = {
-		pi_missing: [
-			"freeDia's helper can't find pi",
-			"Run `bunx freedia install` in Terminal to reinstall the helper and pi.",
+		omp_missing: [
+			"freeDia's helper can't find omp",
+			"Run `bunx freedia install` in Terminal to reinstall the helper and omp.",
 		],
 		not_signed_in: [
 			"Not signed in",

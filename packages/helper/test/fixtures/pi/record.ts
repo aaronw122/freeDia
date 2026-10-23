@@ -8,7 +8,6 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { PiRpcRecord } from "../../../src/protocol";
 
 type JsonObject = Record<string, unknown>;
 type Line = {
@@ -223,7 +222,7 @@ class Pi {
 	settled(after = 0): Promise<PiRpcRecord> {
 		let seen = 0;
 		return this.waitFor(
-			(r) => r.type === "agent_settled" && ++seen > after,
+			(r) => r.type === "session_settled" && ++seen > after,
 			60_000,
 		);
 	}
@@ -660,7 +659,7 @@ async function notSignedIn(): Promise<void> {
 	await noModel.request({ id: "r2", type: "get_available_models" });
 	const s1 = noModel.waitFor(
 		(r) =>
-			r.type === "agent_settled" ||
+			r.type === "session_settled" ||
 			(r.type === "response" && r.id === "r3" && r.success === false),
 		20_000,
 	);
@@ -682,7 +681,7 @@ async function notSignedIn(): Promise<void> {
 	await explicit.request({ id: "r1", type: "get_state" });
 	const s2 = explicit.waitFor(
 		(r) =>
-			r.type === "agent_settled" ||
+			r.type === "session_settled" ||
 			(r.type === "response" && r.id === "r2" && r.success === false),
 		20_000,
 	);

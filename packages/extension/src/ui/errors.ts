@@ -12,13 +12,13 @@ export interface ErrorView {
 }
 
 const HELPER_TITLES: Record<HelperErrorCode, string> = {
-	pi_missing: "freeDia's helper can't find pi",
+	omp_missing: "freeDia's helper can't find omp",
 	not_signed_in: "Not signed in",
 	spawn_failed: "freeDia couldn't start this chat",
 };
 
 const HELPER_COMMANDS: Record<HelperErrorCode, string> = {
-	pi_missing: INSTALL_COMMAND,
+	omp_missing: INSTALL_COMMAND,
 	not_signed_in: LOGIN_COMMAND,
 	spawn_failed: DOCTOR_COMMAND,
 };

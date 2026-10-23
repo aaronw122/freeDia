@@ -1,4 +1,4 @@
-import type { ChatState, ChatSummary, PiRpcRecord } from "freedia/protocol";
+import type { ChatState, ChatSummary, OmpRpcRecord } from "freedia/protocol";
 import type {
 	ChatClient,
 	ClientEvent,
@@ -27,7 +27,7 @@ export interface MockClientOptions {
 	models?: ModelInfo[];
 	model?: ModelRef | null;
 	chats?: ChatSummary[];
-	messages?: Record<string, PiRpcRecord[]>;
+	messages?: Record<string, OmpRpcRecord[]>;
 	readability?: PageReadability;
 	connection?: ConnectionState;
 	reply?: (question: string) => MockReply | null;
@@ -56,7 +56,7 @@ export function fixtureModels(): ModelInfo[] {
 	});
 }
 
-export function fixtureMessages(): PiRpcRecord[] {
+export function fixtureMessages(): OmpRpcRecord[] {
 	const messages = responseData("stream", "get_messages").messages;
 	if (!Array.isArray(messages)) return [];
 	return messages.flatMap((value) => {
@@ -81,7 +81,7 @@ export class MockChatClient implements ChatClient {
 	private models: ModelInfo[];
 	private model: ModelRef | null;
 	private chats: ChatSummary[];
-	private messages: Record<string, PiRpcRecord[]>;
+	private messages: Record<string, OmpRpcRecord[]>;
 	private reply: (question: string) => MockReply | null;
 	private statusDelayMs: number;
 	private stage: "idle" | "waiting" | "running" = "idle";
@@ -112,7 +112,7 @@ export class MockChatClient implements ChatClient {
 		for (const listener of [...this.listeners]) listener(event);
 	}
 
-	emitRpc(rpc: PiRpcRecord, chatId = this.chatId) {
+	emitRpc(rpc: OmpRpcRecord, chatId = this.chatId) {
 		this.emit({ type: "rpc", chatId, rpc });
 	}
 

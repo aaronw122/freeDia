@@ -7,7 +7,7 @@ import {
 	CHAT_A,
 	CHAT_B,
 	CHAT_C,
-	installFakePi,
+	installFakeOmp,
 	type Sent,
 	TestHelper,
 	tempHome,
@@ -19,7 +19,7 @@ const homes: string[] = [];
 function helper(options: ConstructorParameters<typeof TestHelper>[0] = {}) {
 	const h = new TestHelper({
 		...options,
-		env: { FREEDIA_PI_EXTRA_ARGS: FAUX, ...options.env },
+		env: { FREEDIA_OMP_EXTRA_ARGS: FAUX, ...options.env },
 		fake: { title: null, ...options.fake },
 	});
 	homes.push(h.home);
@@ -62,31 +62,31 @@ describe("pi follows the helper's pin", () => {
 		const home = tempHome();
 		const h = helper({
 			home,
-			piVersion: "1.2.9",
+			ompVersion: "18.12.0",
 			helper: {
-				installPi: async (version) => {
+				installOmp: async (version) => {
 					installs.push(version);
 					await install.promise;
-					installFakePi(freediaPaths(home), version);
+					installFakeOmp(freediaPaths(home), version);
 				},
 			},
 		});
 		const sending = h.rpc(CHAT_A, prompt("r1", "hello"));
 		expect(statuses(h.sent)).toEqual([[CHAT_A, "starting"]]);
-		expect(installs).toEqual(["1.3.0"]);
+		expect(installs).toEqual(["18.12.1"]);
 		expect(h.spawns()).toHaveLength(0);
 		install.resolve();
 		await sending;
-		await h.waitForRpc(CHAT_A, (rpc) => rpc.type === "agent_settled", "ran");
+		await h.waitForRpc(CHAT_A, (rpc) => rpc.type === "session_settled", "ran");
 		expect(h.chatSpawns(CHAT_A)).toHaveLength(1);
-		expect(installs).toEqual(["1.3.0"]);
+		expect(installs).toEqual(["18.12.1"]);
 	});
 
 	test("a failed pi install answers spawn_failed pointing to doctor and frees the slot", async () => {
 		const h = helper({
-			piVersion: "1.2.9",
+			ompVersion: "18.12.0",
 			helper: {
-				installPi: async () => {
+				installOmp: async () => {
 					throw new Error("bun add exited with code 1");
 				},
 			},
@@ -101,7 +101,7 @@ describe("pi follows the helper's pin", () => {
 			fix: "Run `bunx freedia doctor` in Terminal to check the install.",
 		});
 		expect(String(h.sent.at(-1)?.message)).toContain(
-			"updating pi to 1.3.0 failed",
+			"updating omp to 18.12.1 failed",
 		);
 		expect(h.spawns()).toHaveLength(0);
 		await h.waitIdle();
@@ -111,7 +111,7 @@ describe("pi follows the helper's pin", () => {
 		const h = helper();
 		await h.rpc(CHAT_A, prompt("r1", "hello"));
 		await h.waitIdle();
-		expect(h.piInstalls).toEqual([]);
+		expect(h.ompInstalls).toEqual([]);
 	});
 });
 
@@ -180,7 +180,11 @@ describe("title calls yield to user prompts", () => {
 		await h.rpc(CHAT_A, prompt("a1", "first"));
 		await h.rpc(CHAT_B, prompt("b1", "waiting"));
 		expect(statuses(h.sent).at(-1)).toEqual([CHAT_B, "queued"]);
-		await h.waitForRpc(CHAT_B, (rpc) => rpc.type === "agent_settled", "B done");
+		await h.waitForRpc(
+			CHAT_B,
+			(rpc) => rpc.type === "session_settled",
+			"B done",
+		);
 		await h.waitIdle();
 		const log = h.fakeLog();
 		const bSpawn = log.findIndex(
@@ -239,7 +243,7 @@ describe("pi stops mid-run", () => {
 			code: "spawn_failed",
 		});
 		expect(String(errors[0]?.message)).toContain("exit code 0");
-		expect(h.rpcs(CHAT_A).some((rpc) => rpc.type === "agent_settled")).toBe(
+		expect(h.rpcs(CHAT_A).some((rpc) => rpc.type === "session_settled")).toBe(
 			false,
 		);
 	});
