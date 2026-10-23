@@ -234,7 +234,7 @@ Spike outcomes are folded into the Contract and the tasks below (2026-10-20). Di
 - [x] **2.1 Integration wiring**: UI uses the real 1B client; end-to-end through helper + pi.
 - [ ] **2.2 PiP float mode (stretch, GO in Chromium; Dia check D pending)**: "Float" opens a Document PiP window only inside a user-gesture handler (button click, ⌘E keydown, or the `open-chat` message) and moves the existing shadow-DOM chat host into it; no new UI instance or port. On PiP `pagehide`, move the host back to the page. Limits (S2): one PiP window across the browser (opening one from another tab closes the first), and it closes when its tab navigates.
 - [x] **2.3 E2E** (Playwright Chromium, unpacked extension, real helper, pi faux provider via `FREEDIA_PI_EXTRA_ARGS`): ENSURE 1–8, 10–12, 14. Playwright can't press browser-level shortcuts, so ⇧⌘E is tested as registration (`chrome.commands.getAll()`) plus the content-side handler via a service-worker message; ⌘E is tested with `page.keyboard.press("Meta+e")`. ENSURE 13 manual in Dia; ENSURE 9 automatable (button click → `context.waitForEvent("page")`). `bun run e2e` (20 specs) and `bun run demo` (walkthrough with screenshots).
-- [ ] **2.4 Docs**: README (install, sign-in, shortcuts, privacy), CHANGELOG.
+- [x] **2.4 Docs**: README (install, sign-in, shortcuts, privacy), CHANGELOG.
 
 ### Bucket 3 — pi → omp swap (2026-10-23)
 
@@ -243,7 +243,7 @@ Buckets 1–2 were built and verified against pi 1.3.0; this bucket swaps the he
 - [x] **3.1 Helper engine swap** (`packages/helper`): `pi.ts` → `omp.ts` (launch per Contract: `--mode rpc --no-ui --cwd ~/.freedia`, `--tools read,grep,glob`, clean env with `HOME=~/.freedia/home`, `--model` fresh-only); `negotiate_protocol` v2 + `rpc_chunk` reassembly; `open_session` binding; run lifecycle on `prompt_result`/`session_settled`; allowlist per the omp command set (`bash` still blocked — verified executing); `chats.ts` enumerates per-chat directories, reads the header title slot, deletes directories; titles via one-shot `omp -p --no-session --no-title`; preflight `not_signed_in` via `get_login_providers`; `helper.hello` reports `ompVersion`; installer installs `@oh-my-pi/pi-coding-agent@18.12.1` into `~/.freedia/omp` and creates `~/.freedia/home`; `FREEDIA_OMP_EXTRA_ARGS` test hook. omp fixtures regenerated from the spike (`packages/helper/test/fixtures/omp/`), faux provider = local OpenAI-compatible server + `models.yml`. Tests updated to the new launch/allowlist/session-layout expectations.
 - [x] **3.2 Extension adjustments**: error mapping (`Model not found` on `set_model`, `prompt_result { status: "error" }`), stop-button lifecycle (`abort` response → `prompt_result` → `session_settled`), unknown frame types ignored (already the case). No UI redesign.
 - [x] **3.3 E2E**: faux server fixture + `models.yml` in the e2e agent dir, updated launch-flag and readonly specs, full `bun run e2e` + `bun run demo`.
-- [ ] **3.4 Docs**: README/CHANGELOG updated for omp; omp memory figures measured and recorded in the Contract.
+- [x] **3.4 Docs**: README/CHANGELOG updated for omp; omp memory figures measured and recorded in the Contract.
 
 ## ENSURE → validation
 
