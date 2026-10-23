@@ -1,4 +1,4 @@
-import type { ChatState, ChatSummary, PiRpcRecord } from "freedia/protocol";
+import type { ChatState, ChatSummary, OmpRpcRecord } from "freedia/protocol";
 import type {
 	ChatClient,
 	ClientEvent,
@@ -27,10 +27,11 @@ export interface MockClientOptions {
 	models?: ModelInfo[];
 	model?: ModelRef | null;
 	chats?: ChatSummary[];
-	messages?: Record<string, PiRpcRecord[]>;
+	messages?: Record<string, OmpRpcRecord[]>;
 	readability?: PageReadability;
 	connection?: ConnectionState;
 	reply?: (question: string) => MockReply | null;
+	setModelError?: string;
 	statusDelayMs?: number;
 }
 
@@ -56,12 +57,23 @@ export function fixtureModels(): ModelInfo[] {
 	});
 }
 
-export function fixtureMessages(): PiRpcRecord[] {
+export function fixtureMessages(): OmpRpcRecord[] {
 	const messages = responseData("stream", "get_messages").messages;
 	if (!Array.isArray(messages)) return [];
 	return messages.flatMap((value) => {
 		const message = asRecord(value);
-		return message ? [{ ...message, type: "message" }] : [];
+		if (!message) return [];
+		const text =
+			message.role === "user"
+				? "## Question\n\nhello from freeDia"
+				: "[faux-1] faux reply to: hello from freeDia";
+		return [
+			{
+				...message,
+				type: "message",
+				content: [{ type: "text", text }],
+			},
+		];
 	});
 }
 
@@ -81,9 +93,10 @@ export class MockChatClient implements ChatClient {
 	private models: ModelInfo[];
 	private model: ModelRef | null;
 	private chats: ChatSummary[];
-	private messages: Record<string, PiRpcRecord[]>;
+	private messages: Record<string, OmpRpcRecord[]>;
 	private reply: (question: string) => MockReply | null;
 	private statusDelayMs: number;
+	private setModelError: string | null;
 	private stage: "idle" | "waiting" | "running" = "idle";
 	private runCount = 0;
 	private wake: (() => void) | null = null;
@@ -100,6 +113,7 @@ export class MockChatClient implements ChatClient {
 		this.connectionState = options.connection ?? "connected";
 		this.reply = options.reply ?? (() => null);
 		this.statusDelayMs = options.statusDelayMs ?? 400;
+		this.setModelError = options.setModelError ?? null;
 	}
 
 	callsTo(method: string): unknown[][] {
@@ -112,7 +126,7 @@ export class MockChatClient implements ChatClient {
 		for (const listener of [...this.listeners]) listener(event);
 	}
 
-	emitRpc(rpc: PiRpcRecord, chatId = this.chatId) {
+	emitRpc(rpc: OmpRpcRecord, chatId = this.chatId) {
 		this.emit({ type: "rpc", chatId, rpc });
 	}
 
@@ -195,7 +209,7 @@ export class MockChatClient implements ChatClient {
 		}
 		this.stage = "running";
 		const settled = reply.run.findLast(
-			(entry) => entry.record.type === "agent_settled",
+			(entry) => entry.record.type === "session_settled",
 		);
 		for (const entry of reply.run) {
 			if (entry === response) continue;
@@ -225,7 +239,6 @@ export class MockChatClient implements ChatClient {
 					message: { ...asRecord(end.record.message), content: [] },
 				});
 			}
-			this.emitRpc({ type: "agent_settled", aborted: true });
 		}
 		this.emitRpc({
 			id: `abort-${this.runCount}`,
@@ -233,6 +246,15 @@ export class MockChatClient implements ChatClient {
 			command: "abort",
 			success: true,
 		});
+		if (stage === "running") {
+			this.emitRpc({
+				type: "prompt_result",
+				status: "aborted",
+				agentInvoked: true,
+				sessionSettled: true,
+			});
+			this.emitRpc({ type: "session_settled" });
+		}
 	}
 
 	private setQuotes(quotes: Quote[]) {
@@ -271,6 +293,7 @@ export class MockChatClient implements ChatClient {
 
 	async setModel(model: ModelRef) {
 		this.calls.push({ method: "setModel", args: [model] });
+		if (this.setModelError !== null) throw new Error(this.setModelError);
 		this.model = model;
 	}
 

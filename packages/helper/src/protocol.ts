@@ -11,17 +11,17 @@ export const FORWARDED_RPC_TYPES = [
 
 export type ForwardedRpcType = (typeof FORWARDED_RPC_TYPES)[number];
 
-export interface PiRpcRecord {
+export interface OmpRpcRecord {
 	type: string;
 	id?: string;
 	[key: string]: unknown;
 }
 
-export interface ForwardedRpc extends PiRpcRecord {
+export interface ForwardedRpc extends OmpRpcRecord {
 	type: ForwardedRpcType;
 }
 
-export interface Envelope<Rpc extends PiRpcRecord = PiRpcRecord> {
+export interface Envelope<Rpc extends OmpRpcRecord = OmpRpcRecord> {
 	chatId: string;
 	rpc: Rpc;
 }
@@ -36,7 +36,7 @@ export interface HelperHelloResponse {
 	type: "helper.hello";
 	id: string;
 	helperVersion: string;
-	piVersion: string;
+	ompVersion: string;
 }
 
 export interface ChatListRequest {
@@ -101,7 +101,7 @@ export interface ChatStatus {
 	state: ChatState;
 }
 
-export type HelperErrorCode = "pi_missing" | "not_signed_in" | "spawn_failed";
+export type HelperErrorCode = "omp_missing" | "not_signed_in" | "spawn_failed";
 
 export interface HelperError {
 	id?: string;

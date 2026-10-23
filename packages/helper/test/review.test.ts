@@ -7,7 +7,7 @@ import {
 	CHAT_A,
 	CHAT_B,
 	CHAT_C,
-	installFakePi,
+	installFakeOmp,
 	type Sent,
 	TestHelper,
 	tempHome,
@@ -19,7 +19,7 @@ const homes: string[] = [];
 function helper(options: ConstructorParameters<typeof TestHelper>[0] = {}) {
 	const h = new TestHelper({
 		...options,
-		env: { FREEDIA_PI_EXTRA_ARGS: FAUX, ...options.env },
+		env: { FREEDIA_OMP_EXTRA_ARGS: FAUX, ...options.env },
 		fake: { title: null, ...options.fake },
 	});
 	homes.push(h.home);
@@ -62,37 +62,41 @@ describe("pi follows the helper's pin", () => {
 		const home = tempHome();
 		const h = helper({
 			home,
-			piVersion: "1.2.9",
+			ompVersion: "18.12.0",
 			helper: {
-				installPi: async (version) => {
+				installOmp: async (version) => {
 					installs.push(version);
 					await install.promise;
-					installFakePi(freediaPaths(home), version);
+					installFakeOmp(freediaPaths(home), version);
 				},
 			},
 		});
 		const sending = h.rpc(CHAT_A, prompt("r1", "hello"));
 		expect(statuses(h.sent)).toEqual([[CHAT_A, "starting"]]);
-		expect(installs).toEqual(["1.3.0"]);
+		expect(installs).toEqual(["18.12.1"]);
 		expect(h.spawns()).toHaveLength(0);
 		install.resolve();
 		await sending;
-		await h.waitForRpc(CHAT_A, (rpc) => rpc.type === "agent_settled", "ran");
+		await h.waitForRpc(CHAT_A, (rpc) => rpc.type === "session_settled", "ran");
 		expect(h.chatSpawns(CHAT_A)).toHaveLength(1);
-		expect(installs).toEqual(["1.3.0"]);
+		expect(installs).toEqual(["18.12.1"]);
 	});
 
 	test("a failed pi install answers spawn_failed pointing to doctor and frees the slot", async () => {
 		const h = helper({
-			piVersion: "1.2.9",
+			ompVersion: "18.12.0",
 			helper: {
-				installPi: async () => {
+				installOmp: async () => {
 					throw new Error("bun add exited with code 1");
 				},
 			},
 		});
 		await h.send({ type: "helper.hello", id: "h1", maxConcurrent: 1 });
 		await h.rpc(CHAT_A, prompt("r1", "hello"));
+		await h.waitFor(
+			() => h.sent.find((message) => message.type === "helper.error"),
+			"install failure",
+		);
 		expect(h.sent.at(-1)).toMatchObject({
 			type: "helper.error",
 			id: "r1",
@@ -101,7 +105,7 @@ describe("pi follows the helper's pin", () => {
 			fix: "Run `bunx freedia doctor` in Terminal to check the install.",
 		});
 		expect(String(h.sent.at(-1)?.message)).toContain(
-			"updating pi to 1.3.0 failed",
+			"bun add exited with code 1",
 		);
 		expect(h.spawns()).toHaveLength(0);
 		await h.waitIdle();
@@ -111,7 +115,7 @@ describe("pi follows the helper's pin", () => {
 		const h = helper();
 		await h.rpc(CHAT_A, prompt("r1", "hello"));
 		await h.waitIdle();
-		expect(h.piInstalls).toEqual([]);
+		expect(h.ompInstalls).toEqual([]);
 	});
 });
 
@@ -135,39 +139,33 @@ describe("first come, first served", () => {
 		await h.rpc(CHAT_C, { id: "c2", type: "abort" });
 		await h.waitIdle();
 		const order = h
-			.spawns()
-			.map((spawn) =>
-				[CHAT_A, CHAT_B, CHAT_C].find((chatId) => spawn.argv?.includes(chatId)),
-			);
+			.fakeLog()
+			.filter(
+				(entry) =>
+					entry.event === "stdin" && entry.record?.type === "open_session",
+			)
+			.map((entry) => entry.record?.sessionDir?.toString().split("/").at(-1));
 		expect(order).toEqual([CHAT_A, CHAT_B, CHAT_C]);
 	});
 
-	test("the sign-in check runs once per provider and again after a not-signed-in failure", async () => {
-		const h = helper({
-			fake: {
-				auth: { faux: "ready" },
-				scripts: {
-					[CHAT_A]: ["stream", "stream"],
-					[CHAT_B]: ["not-signed-in-no-model", "stream"],
-				},
-			},
-		});
+	test("the sign-in check runs once and keyless faux prompts succeed", async () => {
+		const h = helper({ fake: { auth: { faux: "ready" } } });
 		const authChecks = () =>
-			h.fakeLog().filter((entry) => entry.event === "auth").length;
+			h
+				.fakeLog()
+				.filter(
+					(entry) =>
+						entry.event === "stdin" &&
+						entry.record?.type === "get_login_providers",
+				).length;
 		await h.rpc(CHAT_A, prompt("a1", "one"));
 		await h.waitIdle();
-		await h.rpc(CHAT_A, prompt("a2", "two"));
+		await h.rpc(CHAT_B, prompt("b1", "two"));
 		await h.waitIdle();
 		expect(authChecks()).toBe(1);
-		await h.rpc(CHAT_B, prompt("b1", "rejected"));
-		await h.waitForRpc(CHAT_B, (rpc) => rpc.id === "b1", "rejected");
-		await h.waitIdle();
 		expect(h.rpcs(CHAT_B).find((rpc) => rpc.id === "b1")).toMatchObject({
-			success: false,
+			success: true,
 		});
-		await h.rpc(CHAT_B, prompt("b2", "again"));
-		await h.waitIdle();
-		expect(authChecks()).toBe(2);
 	});
 });
 
@@ -180,19 +178,25 @@ describe("title calls yield to user prompts", () => {
 		await h.rpc(CHAT_A, prompt("a1", "first"));
 		await h.rpc(CHAT_B, prompt("b1", "waiting"));
 		expect(statuses(h.sent).at(-1)).toEqual([CHAT_B, "queued"]);
-		await h.waitForRpc(CHAT_B, (rpc) => rpc.type === "agent_settled", "B done");
+		await h.waitForRpc(
+			CHAT_B,
+			(rpc) => rpc.type === "session_settled",
+			"B done",
+		);
 		await h.waitIdle();
 		const log = h.fakeLog();
 		const bSpawn = log.findIndex(
-			(entry) => entry.event === "spawn" && entry.argv?.includes(CHAT_B),
+			(entry) =>
+				entry.event === "stdin" &&
+				entry.record?.type === "open_session" &&
+				entry.record?.sessionDir?.toString().endsWith(CHAT_B),
 		);
 		const bPid = log[bSpawn]?.pid;
 		const bEof = log.findIndex(
 			(entry) => entry.pid === bPid && entry.event === "eof",
 		);
 		const titleSpawn = log.findIndex(
-			(entry) =>
-				entry.event === "spawn" && entry.argv?.includes("--no-session"),
+			(entry) => entry.event === "spawn" && entry.argv?.includes("-p"),
 		);
 		expect(bSpawn).toBeGreaterThan(-1);
 		expect(titleSpawn).toBeGreaterThan(bEof);
@@ -239,7 +243,7 @@ describe("pi stops mid-run", () => {
 			code: "spawn_failed",
 		});
 		expect(String(errors[0]?.message)).toContain("exit code 0");
-		expect(h.rpcs(CHAT_A).some((rpc) => rpc.type === "agent_settled")).toBe(
+		expect(h.rpcs(CHAT_A).some((rpc) => rpc.type === "session_settled")).toBe(
 			false,
 		);
 	});
@@ -338,7 +342,8 @@ describe("extension input filtering", () => {
 				(entry) =>
 					entry.event === "stdin" &&
 					h.chatSpawns(CHAT_A).some((spawn) => spawn.pid === entry.pid) &&
-					entry.record?.type !== "set_session_name",
+					entry.record?.type !== "set_session_name" &&
+					!String(entry.record?.id ?? "").startsWith(INTERNAL_PREFIX),
 			)
 			.map((entry) => entry.record);
 		expect(sentToPi).toEqual([
@@ -352,26 +357,16 @@ describe("extension input filtering", () => {
 	});
 });
 
-describe("titles after an empty aborted first run", () => {
-	test("no title until a run completes with assistant text", async () => {
-		const h = helper({
-			fake: {
-				title: "Fruit chat",
-				scripts: { [CHAT_A]: ["prompt-while-streaming", "stream"] },
-			},
-		});
+describe("titles after an aborted partial reply", () => {
+	test("the retained assistant partial can title the chat", async () => {
+		const h = helper({ fake: { title: "Fruit chat", defaultScript: "abort" } });
 		await h.rpc(CHAT_A, prompt("r1", "long [[long]]"));
 		await h.waitForRpc(CHAT_A, (rpc) => rpc.id === "r1", "accepted");
-		await h.rpc(CHAT_A, prompt("r2", "long [[long]]"));
-		await h.waitForRpc(CHAT_A, (rpc) => rpc.id === "r2", "rejected");
-		await h.rpc(CHAT_A, { id: "r3", type: "abort" });
+		await h.rpc(CHAT_A, { id: "r2", type: "abort" });
 		await h.waitIdle();
-		expect(h.spawns((argv) => argv.includes("--no-session"))).toHaveLength(0);
-		await h.rpc(CHAT_A, prompt("r4", "how do pineapples grow"));
-		await h.waitIdle();
-		expect(h.spawns((argv) => argv.includes("--no-session"))).toHaveLength(1);
+		expect(h.spawns((argv) => argv.includes("-p"))).toHaveLength(1);
 		expect(readFileSync(h.helperSession(CHAT_A), "utf8")).toContain(
-			'"name":"Fruit chat"',
+			'"title":"Fruit chat"',
 		);
 	});
 });

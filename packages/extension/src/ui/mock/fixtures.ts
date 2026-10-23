@@ -1,16 +1,16 @@
-import type { PiRpcRecord } from "freedia/protocol";
-import abortText from "../../../../helper/test/fixtures/pi/abort.jsonl?raw";
-import notSignedInText from "../../../../helper/test/fixtures/pi/not-signed-in-anthropic.jsonl?raw";
-import rejectedText from "../../../../helper/test/fixtures/pi/provider-rejected-401.jsonl?raw";
-import rateLimitText from "../../../../helper/test/fixtures/pi/rate-limit.jsonl?raw";
-import streamText from "../../../../helper/test/fixtures/pi/stream.jsonl?raw";
-import toolsText from "../../../../helper/test/fixtures/pi/tools-readonly.jsonl?raw";
+import type { OmpRpcRecord } from "freedia/protocol";
+import streamText from "../../../../helper/test/fixtures/omp/A-fresh.jsonl?raw";
+import abortText from "../../../../helper/test/fixtures/omp/C-abort.jsonl?raw";
+import notSignedInText from "../../../../helper/test/fixtures/omp/D-unauth.jsonl?raw";
+import toolsText from "../../../../helper/test/fixtures/omp/E-readonly.jsonl?raw";
+import rejectedText from "../../../../helper/test/fixtures/omp/provider-rejected-401.jsonl?raw";
+import rateLimitText from "../../../../helper/test/fixtures/omp/rate-limit.jsonl?raw";
 import { asRecord, messageRole, type UnknownRecord } from "../records";
 
 export interface FixtureLine {
 	t: number;
 	dir: string;
-	record: PiRpcRecord;
+	record: OmpRpcRecord;
 }
 
 export type FixtureName =
@@ -55,7 +55,7 @@ export function fixtureLines(name: FixtureName): FixtureLine[] {
 
 export interface TimedRecord {
 	t: number;
-	record: PiRpcRecord;
+	record: OmpRpcRecord;
 }
 
 export function promptRun(name: FixtureName, nth = 0): TimedRecord[] {
@@ -75,7 +75,7 @@ export function promptRun(name: FixtureName, nth = 0): TimedRecord[] {
 		}
 		run.push({ t: line.t - prompt.t, record: line.record });
 		if (
-			line.record.type === "agent_settled" ||
+			line.record.type === "session_settled" ||
 			(line.record.type === "response" && line.record.success === false)
 		) {
 			break;
@@ -100,7 +100,7 @@ export function responseData(
 	return data;
 }
 
-function withMessageText(record: PiRpcRecord, text: string): PiRpcRecord {
+function withMessageText(record: OmpRpcRecord, text: string): OmpRpcRecord {
 	return {
 		...record,
 		message: { ...asRecord(record.message), content: [{ type: "text", text }] },

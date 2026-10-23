@@ -6,7 +6,7 @@ import {
 	type FreediaHome,
 	readLog,
 	removeHome,
-	waitForNoPi,
+	waitForNoOmp,
 } from "./env";
 import { type Site, startSite } from "./site";
 
@@ -28,7 +28,7 @@ export const test = base.extend<Fixtures, { siteHost: string; site: Site }>({
 	],
 	helperEnv: [{}, { option: true }],
 	home: async ({ helperEnv }, use, testInfo) => {
-		const home = createHome(helperEnv);
+		const home = await createHome(helperEnv);
 		await use(home);
 		if (testInfo.status !== testInfo.expectedStatus) {
 			await testInfo.attach("helper.log", {
@@ -36,7 +36,7 @@ export const test = base.extend<Fixtures, { siteHost: string; site: Site }>({
 				contentType: "text/plain",
 			});
 		}
-		await waitForNoPi(home).catch(() => undefined);
+		await waitForNoOmp(home).catch(() => undefined);
 		removeHome(home);
 	},
 	freedia: async ({ home }, use, testInfo) => {

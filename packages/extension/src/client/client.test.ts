@@ -294,7 +294,7 @@ describe("chat client send", () => {
 		expect(events).toContainEqual({ type: "page", readability: "unreadable" });
 	});
 
-	test("a rejected prompt rejects send with pi's error and keeps the quotes", async () => {
+	test("a rejected prompt rejects send with omp's error and keeps the quotes", async () => {
 		const { client, worker } = setup();
 		worker.onPrompt = (rpc) =>
 			worker.reply(rpc, false, undefined, "Agent is already processing.");
@@ -324,7 +324,7 @@ describe("chat client commands", () => {
 		expect(client.currentChatId()).toBe(CHAT_B);
 	});
 
-	test("models come from pi with their context windows", async () => {
+	test("models come from omp with their context windows", async () => {
 		const { client } = setup();
 		expect(await client.listModels()).toEqual([
 			{
@@ -415,14 +415,14 @@ describe("chat client commands", () => {
 		expect(client.currentChatId()).toBe(CHAT_B);
 	});
 
-	test("pi events and helper pushes are forwarded as client events", async () => {
+	test("omp events and helper pushes are forwarded as client events", async () => {
 		const { client, worker, events } = setup();
 		await client.listModels();
 		worker.helper({ chatId: CHAT_A, rpc: { type: "agent_start" } });
 		worker.helper({ type: "chat.status", chatId: CHAT_A, state: "starting" });
 		worker.helper({
 			type: "helper.error",
-			code: "pi_missing",
+			code: "omp_missing",
 			message: "m",
 			fix: "f",
 		});
@@ -440,7 +440,7 @@ describe("chat client commands", () => {
 			type: "helper_error",
 			error: {
 				type: "helper.error",
-				code: "pi_missing",
+				code: "omp_missing",
 				message: "m",
 				fix: "f",
 			},

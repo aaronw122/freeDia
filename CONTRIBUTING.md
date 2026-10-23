@@ -33,9 +33,9 @@ Why this change exists and why this approach over alternatives. If other approac
 Evidence depends on the surface:
 
 - **Chat UI / extension behavior:** screenshots or a short video of any change a user can see, in Chromium and (for shortcut or Dia-specific changes) in Dia. Non-visual changes get a one-line note of what to verify instead.
-- **Helper / pi pipe:** the exact envelope and pi RPC records before and after (captured from a real pi run or the recorded S1 fixtures), plus the numbers that changed (processes spawned, queue depth, respawn time, memory).
+- **Helper / omp pipe:** the exact envelope and omp RPC records before and after (captured from a real omp run or the recorded spike fixtures), plus the numbers that changed (processes spawned, queue depth, respawn time, memory).
 - **Contract / wire format:** the exact JSON, pinned in a helper test and reflected in the Contract section of `plans/freedia-plan.md`.
-- **Installer:** the files written (native host manifest, `~/.freedia/bin`, pi install) on a clean `HOME`, and the browser connecting (`helper.hello` answered).
+- **Installer:** the files written (native host manifest, `~/.freedia/bin`, omp install) on a clean `HOME`, and the browser connecting (`helper.hello` answered).
 - **Docs / provenance only:** state what claim changed and what observation backs it.
 
 ### Test results
@@ -49,6 +49,6 @@ List the commands you ran and their outcome. Baseline: `bun test`, `bunx biome c
 - [ ] Extension builds and the helper compiles to a single binary
 - [ ] E2E run for any change to the chat flow (send, stop, follow-up, model switch, history)
 - [ ] Contract section of `plans/freedia-plan.md` updated for any envelope or helper-command change
-- [ ] Read-only guarantees intact: pi launch flags unchanged or justified, helper allowlist still blocks `bash`
+- [ ] Read-only guarantees intact: omp launch flags unchanged or justified, helper allowlist still blocks `bash`
 - [ ] No source comments; rationale in the PR description or `plans/` / `notes/`
 - [ ] Follows existing patterns in `CLAUDE.md` / `AGENTS.md`

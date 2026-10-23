@@ -1,4 +1,4 @@
-import type { HelperError, PiRpcRecord } from "freedia/protocol";
+import type { HelperError, OmpRpcRecord } from "freedia/protocol";
 import type { ClientEvent } from "../client/types";
 import { asRecord } from "./records";
 
@@ -64,8 +64,8 @@ export type TranscriptAction =
 	| { type: "send"; text: string }
 	| { type: "send_failed"; message: string }
 	| { type: "reset"; chatId: string }
-	| { type: "loaded"; chatId: string; messages: PiRpcRecord[] }
-	| { type: "restored"; chatId: string; messages: PiRpcRecord[] }
+	| { type: "loaded"; chatId: string; messages: OmpRpcRecord[] }
+	| { type: "restored"; chatId: string; messages: OmpRpcRecord[] }
 	| { type: "failed"; title: string; message: string };
 
 const WAITING_PHASES: ReadonlySet<RunPhase> = new Set([
@@ -139,7 +139,7 @@ export function toolLabel(toolName: string): string {
 	}
 }
 
-interface PiMessage {
+interface OmpMessage {
 	role: string;
 	content: unknown;
 	stopReason: unknown;
@@ -147,7 +147,7 @@ interface PiMessage {
 	provider: unknown;
 }
 
-function asMessage(value: unknown): PiMessage | null {
+function asMessage(value: unknown): OmpMessage | null {
 	const record = asRecord(value);
 	if (!record || typeof record.role !== "string") return null;
 	return {
@@ -174,7 +174,7 @@ function stringOrNull(value: unknown): string | null {
 	return typeof value === "string" ? value : null;
 }
 
-function segmentFromMessage(message: PiMessage): ReplySegment {
+function segmentFromMessage(message: OmpMessage): ReplySegment {
 	return {
 		parts: textParts(message.content),
 		stopReason: stringOrNull(message.stopReason),
@@ -183,7 +183,7 @@ function segmentFromMessage(message: PiMessage): ReplySegment {
 	};
 }
 
-export function turnsFromMessages(messages: PiRpcRecord[]): Turn[] {
+export function turnsFromMessages(messages: OmpRpcRecord[]): Turn[] {
 	const turns: Turn[] = [];
 	messages.forEach((raw, index) => {
 		const message = asMessage(raw);
@@ -310,7 +310,7 @@ function onAssistantEvent(
 
 function onMessageStart(
 	state: TranscriptState,
-	message: PiMessage,
+	message: OmpMessage,
 ): TranscriptState {
 	if (message.role !== "assistant") return state;
 	const next = withOpenReply(state, (turn) => ({
@@ -329,7 +329,7 @@ function onMessageStart(
 
 function onUserEcho(
 	state: TranscriptState,
-	message: PiMessage,
+	message: OmpMessage,
 ): TranscriptState {
 	const text = questionFromPrompt(textParts(message.content).join(""));
 	const pending = state.turns.flatMap((turn, index) =>
@@ -357,7 +357,7 @@ function onUserEcho(
 
 function onMessageEnd(
 	state: TranscriptState,
-	message: PiMessage,
+	message: OmpMessage,
 ): TranscriptState {
 	if (message.role === "user") return onUserEcho(state, message);
 	if (message.role !== "assistant") return state;
@@ -391,7 +391,7 @@ function settle(state: TranscriptState): TranscriptState {
 
 function onRetryStart(
 	state: TranscriptState,
-	record: PiRpcRecord,
+	record: OmpRpcRecord,
 ): TranscriptState {
 	const failed = openReply(state);
 	const provider = failed?.segments.at(-1)?.provider ?? state.retry?.provider;
@@ -418,7 +418,7 @@ function onRetryStart(
 
 function onRetryEnd(
 	state: TranscriptState,
-	record: PiRpcRecord,
+	record: OmpRpcRecord,
 ): TranscriptState {
 	const turn = openReply(state);
 	if (record.success !== false || (turn && replyFailure(turn))) {
@@ -440,7 +440,33 @@ function onRetryEnd(
 	return { ...next, retry: null };
 }
 
-function onRpc(state: TranscriptState, record: PiRpcRecord): TranscriptState {
+function onPromptResult(
+	state: TranscriptState,
+	record: OmpRpcRecord,
+): TranscriptState {
+	if (record.status !== "error") return settle(state);
+	const error = asRecord(record.error);
+	const message = stringOrNull(error?.message);
+	const provider = stringOrNull(error?.provider);
+	const next = withOpenReply(state, (turn) => {
+		const failure: ReplySegment = {
+			parts: [],
+			stopReason: "error",
+			errorMessage: message,
+			provider,
+		};
+		return replyFailure(turn)
+			? withLastSegment(turn, (segment) => ({
+					...segment,
+					errorMessage: message ?? segment.errorMessage,
+					provider: provider ?? segment.provider,
+				}))
+			: { ...turn, segments: [...turn.segments, failure] };
+	});
+	return settle(next);
+}
+
+function onRpc(state: TranscriptState, record: OmpRpcRecord): TranscriptState {
 	switch (record.type) {
 		case "response":
 			if (record.command === "abort" && record.success === true) {
@@ -487,7 +513,9 @@ function onRpc(state: TranscriptState, record: PiRpcRecord): TranscriptState {
 			return onRetryStart(state, record);
 		case "auto_retry_end":
 			return onRetryEnd(state, record);
-		case "agent_settled":
+		case "prompt_result":
+			return onPromptResult(state, record);
+		case "session_settled":
 			return settle(state);
 		default:
 			return state;

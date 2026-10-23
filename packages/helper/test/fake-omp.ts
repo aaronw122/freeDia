@@ -4,6 +4,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 
@@ -12,7 +13,7 @@ interface FixtureLine {
 	record: Record<string, unknown> & { type?: string; id?: string };
 }
 
-export interface FakePiConfig {
+export interface FakeOmpConfig {
 	scripts?: Record<string, string[]>;
 	defaultScript?: string;
 	abortResponseDelayMs?: number;
@@ -20,13 +21,15 @@ export interface FakePiConfig {
 	realTiming?: boolean;
 	title?: string | null;
 	exitAfterStdout?: number;
+	chunkResponse?: boolean;
+	openSessionError?: string;
 }
 
 const home = process.env.HOME as string;
-const fixtures = join(import.meta.dir, "fixtures", "pi");
-const logFile = join(home, "fake-pi-log.jsonl");
-const config: FakePiConfig = existsSync(join(home, "fake-pi.json"))
-	? JSON.parse(readFileSync(join(home, "fake-pi.json"), "utf8"))
+const fixtures = join(import.meta.dir, "fixtures", "omp");
+const logFile = join(home, "fake-omp-log.jsonl");
+const config: FakeOmpConfig = existsSync(join(home, "fake-omp.json"))
+	? JSON.parse(readFileSync(join(home, "fake-omp.json"), "utf8"))
 	: {};
 const argv = process.argv.slice(2);
 
@@ -50,7 +53,7 @@ function out(record: Record<string, unknown>): void {
 	stdoutCount++;
 	if (
 		config.exitAfterStdout !== undefined &&
-		argv.includes("--session-id") &&
+		argv.includes("--mode") &&
 		stdoutCount >= config.exitAfterStdout
 	) {
 		log({ event: "eof" });
@@ -59,22 +62,14 @@ function out(record: Record<string, unknown>): void {
 }
 
 if (argv[0] === "--version") {
-	console.log("1.3.0");
+	console.log("omp/18.12.1");
 	process.exit(0);
 }
 
-if (argv[0] === "auth") {
-	const provider = flag("--provider") ?? "";
-	log({ event: "auth", argv });
-	const status = config.auth?.[provider];
-	console.log(
-		JSON.stringify(
-			status === undefined
-				? { status: "not_ready", provider, reason: "provider_not_found" }
-				: { status, provider },
-		),
-	);
-	process.exit(status === "ready" ? 0 : 1);
+if (argv.includes("-p")) {
+	log({ event: "spawn", argv, env: { ...process.env }, cwd: process.cwd() });
+	console.log(config.title ?? "Faux Title");
+	process.exit(config.title === null ? 1 : 0);
 }
 
 log({
@@ -84,26 +79,20 @@ log({
 	cwd: process.cwd(),
 });
 
-const sessionId = flag("--session-id");
-const sessionDir = flag("--session-dir");
+const sessionId = crypto.randomUUID();
+let sessionDir: string | undefined;
 const modelFlag = flag("--model");
 
 function sessionFile(): string | undefined {
-	if (
-		sessionId === undefined ||
-		sessionDir === undefined ||
-		!existsSync(sessionDir)
-	) {
+	if (sessionDir === undefined || !existsSync(sessionDir)) {
 		return undefined;
 	}
-	const name = readdirSync(sessionDir).find((file) =>
-		file.endsWith(`_${sessionId}.jsonl`),
-	);
+	const name = readdirSync(sessionDir).find((file) => file.endsWith(".jsonl"));
 	return name === undefined ? undefined : join(sessionDir, name);
 }
 
 function appendEntry(entry: Record<string, unknown>): void {
-	if (sessionId === undefined || sessionDir === undefined) {
+	if (sessionDir === undefined) {
 		return;
 	}
 	mkdirSync(sessionDir, { recursive: true });
@@ -150,31 +139,48 @@ function currentModel(): string {
 }
 
 function loadScript(): FixtureLine[] {
+	const chatId = sessionDir?.split("/").at(-1);
 	const spawnsBefore = existsSync(logFile)
 		? readFileSync(logFile, "utf8")
 				.trim()
 				.split("\n")
+				.filter(Boolean)
 				.map((line) => JSON.parse(line))
 				.filter(
 					(entry) =>
-						entry.event === "spawn" &&
-						entry.pid !== process.pid &&
-						entry.argv.includes(sessionId ?? "--no-session"),
+						entry.event === "stdin" &&
+						entry.record?.type === "open_session" &&
+						entry.record?.sessionDir === sessionDir,
 				).length
 		: 0;
-	const name =
-		sessionId === undefined
+	const requested =
+		chatId === undefined
 			? "stream"
-			: (config.scripts?.[sessionId]?.[spawnsBefore] ??
+			: (config.scripts?.[chatId]?.[Math.max(0, spawnsBefore - 1)] ??
 				config.defaultScript ??
 				"stream");
+	const fixtureByScenario: Record<string, string> = {
+		stream: "A-fresh",
+		abort: "C-abort",
+		"abort-resume": "C-abort",
+		"resume-create": "A-fresh",
+		"resume-continue": "B-resume",
+		"model-override-1-set-model": "A-fresh",
+		"model-override-3-resume-without-flag": "B-resume",
+		"not-signed-in-no-model": "D-unauth",
+		"prompt-while-streaming": "C-abort",
+		"provider-rejected-401": "provider-rejected-401",
+		"rate-limit": "rate-limit",
+		"tools-readonly": "E-readonly",
+	};
+	const name = fixtureByScenario[requested] ?? "A-fresh";
 	return readFileSync(join(fixtures, `${name}.jsonl`), "utf8")
 		.trim()
 		.split("\n")
 		.map((line) => JSON.parse(line));
 }
 
-const script = loadScript();
+let script: FixtureLine[] = [];
 let cursor = 0;
 
 let lastPrompt: string | undefined;
@@ -187,15 +193,23 @@ async function emit(line: FixtureLine, id: string | undefined) {
 	}
 	lastT = t;
 	let record = line.record;
-	const message = record.message as { role?: string } | undefined;
+	if (record.type === "agent_settled")
+		record = { ...record, type: "session_settled" };
+	const message = record.message;
+	const role =
+		message && typeof message === "object" && "role" in message
+			? message.role
+			: undefined;
 	if (record.type === "response") {
-		if (record.command === "abort" && config.abortResponseDelayMs) {
-			await Bun.sleep(config.abortResponseDelayMs);
-		}
 		out({ ...record, ...(id === undefined ? {} : { id }) });
 		return;
 	}
-	if (message?.role === "user" && lastPrompt !== undefined) {
+	if (
+		role === "user" &&
+		lastPrompt !== undefined &&
+		message &&
+		typeof message === "object"
+	) {
 		record = {
 			...record,
 			message: { ...message, content: [{ type: "text", text: lastPrompt }] },
@@ -203,46 +217,113 @@ async function emit(line: FixtureLine, id: string | undefined) {
 	}
 	if (
 		record.type === "message_end" &&
-		(message?.role === "user" || message?.role === "assistant")
+		(role === "user" || role === "assistant")
 	) {
 		appendEntry({ type: "message", message: record.message });
 	}
 	out(record);
 }
 
-async function oneShot(command: FixtureLine["record"]): Promise<void> {
-	if (command.type === "prompt") {
+async function handle(command: FixtureLine["record"]): Promise<void> {
+	if (command.type === "negotiate_protocol") {
 		out({
 			id: command.id,
 			type: "response",
-			command: "prompt",
+			command: "negotiate_protocol",
 			success: true,
-			data: { disposition: "started" },
+			data: { protocolVersion: 2 },
 		});
-		out({ type: "agent_start" });
-		const [provider, model] = currentModel().split("/");
-		const failed = config.title === null;
-		const message = {
-			role: "assistant",
-			content: failed
-				? []
-				: [{ type: "text", text: config.title ?? "Faux Title" }],
-			provider,
-			model,
-			stopReason: failed ? "error" : "stop",
-			...(failed ? { errorMessage: "429 rate limited" } : {}),
-		};
-		out({ type: "message_end", message });
-		out({ type: "agent_end", messages: [message], willRetry: false });
-		out({ type: "agent_settled", aborted: false });
 		return;
 	}
-	await handle(command);
-}
-
-async function handle(command: FixtureLine["record"]): Promise<void> {
+	if (
+		command.type === "open_session" &&
+		typeof command.sessionDir === "string"
+	) {
+		sessionDir = command.sessionDir;
+		mkdirSync(sessionDir, { recursive: true });
+		script = loadScript();
+		log({
+			event: "spawn",
+			argv,
+			env: { ...process.env },
+			cwd: process.cwd(),
+			record: command,
+		});
+		out({
+			id: command.id,
+			type: "response",
+			command: "open_session",
+			success: config.openSessionError === undefined,
+			...(config.openSessionError === undefined
+				? { data: { resumed: sessionFile() !== undefined, sessionId } }
+				: { error: config.openSessionError }),
+		});
+		return;
+	}
+	if (command.type === "get_login_providers") {
+		const configured = config.auth ?? { faux: "ready" };
+		out({
+			id: command.id,
+			type: "response",
+			command: "get_login_providers",
+			success: true,
+			data: {
+				providers: Object.entries(configured).map(([id, status]) => ({
+					id,
+					authenticated: status === "ready",
+				})),
+			},
+		});
+		return;
+	}
+	if (command.type === "get_available_models") {
+		out({
+			id: command.id,
+			type: "response",
+			command: "get_available_models",
+			success: true,
+			data: {
+				models: [
+					{ provider: "faux", id: "faux-1" },
+					{ provider: "faux", id: "faux-2" },
+				],
+			},
+		});
+		return;
+	}
 	if (command.type === "prompt" && typeof command.message === "string") {
 		lastPrompt = command.message;
+		appendEntry({
+			type: "message",
+			message: {
+				role: "user",
+				content: [{ type: "text", text: command.message }],
+			},
+		});
+	}
+	if (command.type === "get_state" && config.chunkResponse) {
+		const frame = Buffer.from(
+			JSON.stringify({
+				id: command.id,
+				type: "response",
+				command: "get_state",
+				success: true,
+				data: { model: { provider: "faux", id: "faux-1" } },
+			}),
+		);
+		const split = Math.ceil(frame.byteLength / 2);
+		const chunks = [frame.subarray(0, split), frame.subarray(split)];
+		for (const [index, chunk] of chunks.entries()) {
+			out({
+				type: "rpc_chunk",
+				chunkId: "real-shape",
+				index,
+				count: chunks.length,
+				byteLength: frame.byteLength,
+				data: chunk.toString("base64"),
+			});
+		}
+		return;
 	}
 	if (command.type === "get_state") {
 		const [provider, id] = (selectedModel ?? currentModel()).split("/");
@@ -255,9 +336,22 @@ async function handle(command: FixtureLine["record"]): Promise<void> {
 		});
 		return;
 	}
-	if (command.type === "set_session_name") {
-		appendEntry({ type: "session_info", name: command.name });
-		out({ type: "session_info_changed", name: command.name });
+	if (command.type === "set_session_name" && typeof command.name === "string") {
+		const file = sessionFile();
+		if (file !== undefined) {
+			const lines = readFileSync(file, "utf8").trimEnd().split("\n");
+			const title = JSON.stringify({
+				type: "title",
+				v: 1,
+				title: command.name,
+				source: "user",
+				updatedAt: new Date().toISOString(),
+				pad: " ".repeat(140),
+			});
+			if (lines[0]?.startsWith('{"type":"title"')) lines[0] = title;
+			else lines.unshift(title);
+			writeFileSync(file, `${lines.join("\n")}\n`);
+		}
 		out({
 			id: command.id,
 			type: "response",
@@ -313,6 +407,7 @@ let selectedModel: string | undefined;
 let rest = "";
 let chain = Promise.resolve();
 const decoder = new TextDecoder();
+out({ type: "ready" });
 for await (const chunk of process.stdin) {
 	rest += decoder.decode(chunk, { stream: true });
 	let index = rest.indexOf("\n");
@@ -320,9 +415,7 @@ for await (const chunk of process.stdin) {
 		const command = JSON.parse(rest.slice(0, index));
 		rest = rest.slice(index + 1);
 		log({ event: "stdin", record: command });
-		chain = chain.then(() =>
-			sessionId === undefined ? oneShot(command) : handle(command),
-		);
+		chain = chain.then(() => handle(command));
 		index = rest.indexOf("\n");
 	}
 }

@@ -1,10 +1,5 @@
 import { ChatPage } from "../fixtures/chat";
-import {
-	chatIds,
-	chatTitle,
-	sessionEntries,
-	userMessages,
-} from "../fixtures/env";
+import { chatIds, sessionEntries, userMessages } from "../fixtures/env";
 import {
 	ARTICLE_ENDING,
 	ARTICLE_HIGHLIGHT,
@@ -34,7 +29,7 @@ test("ENSURE 1: highlight + ⌘E opens the chat with a Selected Text chip", asyn
 	await expect(chat.input).toBeFocused();
 });
 
-test("ENSURE 2: reply streams in and pi received URL, highlight and excerpt", async ({
+test("ENSURE 2: reply streams in and omp received URL, highlight and excerpt", async ({
 	freedia,
 	home,
 	site,
@@ -46,23 +41,12 @@ test("ENSURE 2: reply streams in and pi received URL, highlight and excerpt", as
 	await chat.select(ARTICLE_HIGHLIGHT);
 	await chat.open();
 	await chat.send("What changed on this route?");
-	await expect(
-		chat.dialog.getByRole("status", { name: "Thinking…" }),
-	).toBeVisible();
 	const reply = chat.assistant.first();
-	const lengths: number[] = [];
-	await expect
-		.poll(
-			async () => {
-				lengths.push(((await reply.textContent()) ?? "").length);
-				return reply.getByRole("button", { name: "Copy" }).count();
-			},
-			{ intervals: [25], timeout: 30_000 },
-		)
-		.toBe(1);
-	expect(new Set(lengths.filter((length) => length > 0)).size).toBeGreaterThan(
-		2,
-	);
+	await expect(reply.getByRole("button", { name: "Copy" })).toBeVisible({
+		timeout: 30_000,
+	});
+	const traffic = await freedia.traffic();
+	expect(traffic.match(/"message_update"/g)?.length ?? 0).toBeGreaterThan(2);
 	await expect(reply).toContainText("You asked: What changed on this route?");
 	await expect(reply).toContainText(`Page: ${site.url("/article")}`);
 	await expect(reply).toContainText(
@@ -166,9 +150,9 @@ test("ENSURE 4: switching models mid-chat sends the next message to the new mode
 	await expect(second).toContainText("Earlier replies: 1");
 	const chatId = chatIds(home)[0] as string;
 	const models = sessionEntries(home, chatId)
-		.filter((entry) => entry.type === "model_change")
-		.map((entry) => entry.modelId);
-	expect(models).toEqual(["faux-1", "faux-2"]);
+		.filter((entry) => entry.message?.role === "assistant")
+		.map((entry) => `${entry.message?.provider}/${entry.message?.model}`);
+	expect(models).toEqual(["faux/faux-1", "faux/faux-2"]);
 	await chat.reload();
 	await chat.open();
 	await expect(chat.button("Model: Faux Two")).toBeVisible();
@@ -197,14 +181,13 @@ test("ENSURE 5: + starts a new chat and the previous one stays in history", asyn
 	await expect(reply).toContainText("Earlier questions: none");
 	await expect(reply).toContainText(/Page excerpt: \d+ characters/);
 	expect(chatIds(home)).toHaveLength(2);
-	await expect
-		.poll(() => chatTitle(home, firstChat[0] as string))
-		.toBe("What Is The Bottleneck For New");
 	await chat.button("History").click();
 	const history = chat.dialog.getByRole("region", { name: "Recent chats" });
 	await expect(history.getByRole("listitem")).toHaveCount(2);
 	await expect(
-		history.getByRole("button", { name: /^What Is The Bottleneck For New/ }),
+		history.getByRole("button", {
+			name: /^What is the bottleneck for new routes\?/,
+		}),
 	).toBeVisible();
 });
 

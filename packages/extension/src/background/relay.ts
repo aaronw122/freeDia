@@ -447,7 +447,9 @@ export class Relay {
 			rpc.type === "response" &&
 			rpc.command === "abort" &&
 			rpc.success === true;
-		if (rpc.type === "agent_settled" || aborted) {
+		const terminal =
+			rpc.type === "prompt_result" || rpc.type === "session_settled";
+		if (terminal || aborted) {
 			this.running.delete(chatId);
 			this.closeIfIdle();
 		}

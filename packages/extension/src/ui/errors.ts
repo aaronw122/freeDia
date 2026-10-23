@@ -12,13 +12,13 @@ export interface ErrorView {
 }
 
 const HELPER_TITLES: Record<HelperErrorCode, string> = {
-	pi_missing: "freeDia's helper can't find pi",
+	omp_missing: "freeDia's helper can't find omp",
 	not_signed_in: "Not signed in",
 	spawn_failed: "freeDia couldn't start this chat",
 };
 
 const HELPER_COMMANDS: Record<HelperErrorCode, string> = {
-	pi_missing: INSTALL_COMMAND,
+	omp_missing: INSTALL_COMMAND,
 	not_signed_in: LOGIN_COMMAND,
 	spawn_failed: DOCTOR_COMMAND,
 };
@@ -36,6 +36,17 @@ export function helperErrorView(error: HelperError): ErrorView {
 const SIGN_IN_FIX = `Run \`${LOGIN_COMMAND}\` in Terminal to sign in, then try again.`;
 
 export function promptErrorView(message: string): ErrorView {
+	const missingModel = /^Model not found: ([^/\s]+)\/([^\s]+)\.?$/i.exec(
+		message,
+	);
+	if (missingModel) {
+		return {
+			title: `Not signed in to ${missingModel[1]}`,
+			fix: `Run \`${LOGIN_COMMAND}\` in Terminal to sign in, or pick another model below.`,
+			command: LOGIN_COMMAND,
+			detail: null,
+		};
+	}
 	const noKey = /^No API key found for (.+?)\.?(\n|$)/.exec(message);
 	if (noKey) {
 		const target = noKey[1] ?? "";
@@ -63,6 +74,17 @@ export function promptErrorView(message: string): ErrorView {
 		command: null,
 		detail: message || null,
 	};
+}
+
+export function actionErrorView(title: string, message: string): ErrorView {
+	return /^Model not found:/i.test(message)
+		? promptErrorView(message)
+		: {
+				title,
+				fix: "Try again.",
+				command: null,
+				detail: message || null,
+			};
 }
 
 const QUOTA_PATTERN =

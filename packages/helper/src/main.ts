@@ -12,16 +12,16 @@ import {
 } from "./framing";
 import { Helper, type Output } from "./helper";
 import {
-	bunAddPi,
+	bunAddOmp,
 	doctor,
 	extensionIdsFrom,
 	install,
-	PI_VERSION,
-	piSignIn,
+	OMP_VERSION,
+	ompSignIn,
 	uninstall,
 } from "./install";
+import { ompConfigFromEnv, ompVersion } from "./omp";
 import { freediaPaths } from "./paths";
-import { piConfigFromEnv, piVersion } from "./pi";
 import { MAX_EXTENSION_MESSAGE_BYTES } from "./protocol";
 import { SelfUpdater } from "./update";
 
@@ -34,7 +34,7 @@ function log(line: string): void {
 
 async function runHost(home: string): Promise<void> {
 	const paths = freediaPaths(home);
-	const pi = piConfigFromEnv(paths, process.env, process.execPath);
+	const omp = ompConfigFromEnv(paths, process.env, process.execPath);
 	const write = (frames: Uint8Array[]) => {
 		for (const frame of frames) {
 			process.stdout.write(frame);
@@ -60,18 +60,18 @@ async function runHost(home: string): Promise<void> {
 		: undefined;
 	const helper = new Helper({
 		paths,
-		pi,
+		omp,
 		output,
 		helperVersion: pkg.version,
-		pinnedPiVersion: PI_VERSION,
-		installPi: (version) => bunAddPi(paths, version, process.execPath, log),
+		pinnedOmpVersion: OMP_VERSION,
+		installOmp: (version) => bunAddOmp(paths, version, process.execPath, log),
 		log,
 		...(updater === undefined
 			? {}
 			: {
 					updater,
 					afterUpdate: async () => {
-						const proc = Bun.spawn([process.execPath, "sync-pi"], {
+						const proc = Bun.spawn([process.execPath, "sync-omp"], {
 							env: { ...process.env, FREEDIA_HOME: home },
 							stdin: "ignore",
 							stdout: "pipe",
@@ -84,7 +84,7 @@ async function runHost(home: string): Promise<void> {
 						]);
 						log(`${out}${err}`.trim());
 						if (code !== 0) {
-							throw new Error(`sync-pi exited with code ${code}`);
+							throw new Error(`sync-omp exited with code ${code}`);
 						}
 					},
 				}),
@@ -142,7 +142,7 @@ async function runCli(argv: string[]): Promise<number> {
 	});
 	const home = values.home ?? process.env.FREEDIA_HOME ?? homedir();
 	const paths = freediaPaths(home);
-	const pi = piConfigFromEnv(paths, process.env, process.execPath);
+	const omp = ompConfigFromEnv(paths, process.env, process.execPath);
 	const storeExtensionId =
 		values["store-extension-id"] ?? process.env.FREEDIA_STORE_EXTENSION_ID;
 	const extensionIds = extensionIdsFrom(
@@ -154,15 +154,15 @@ async function runCli(argv: string[]): Promise<number> {
 		case "install":
 			await install({
 				paths,
-				pi,
+				omp,
 				extensionIds,
 				storeExtensionId,
 				sourceBinary: sourceBinary(values.binary),
 				print,
-				installPi: (target, version) =>
-					bunAddPi(target, version, process.execPath, print),
+				installOmp: (target, version) =>
+					bunAddOmp(target, version, process.execPath, print),
 				signIn:
-					values["no-login"] || !process.stdin.isTTY ? undefined : piSignIn,
+					values["no-login"] || !process.stdin.isTTY ? undefined : ompSignIn,
 				openUrl: values["no-open"]
 					? undefined
 					: async (url) => {
@@ -174,24 +174,23 @@ async function runCli(argv: string[]): Promise<number> {
 			uninstall({ paths, storeExtensionId, print }, values.purge === true);
 			return 0;
 		case "login":
-			print("Type /login, pick a provider and finish sign-in, then /quit.");
-			await piSignIn(pi);
+			await ompSignIn(omp);
 			return 0;
 		case "doctor": {
-			const checks = await doctor(paths, pi, extensionIds);
+			const checks = await doctor(paths, omp, extensionIds);
 			for (const check of checks) {
 				print(`${check.ok ? "ok  " : "FAIL"} ${check.name}: ${check.detail}`);
 			}
 			return checks.every((check) => check.ok) ? 0 : 1;
 		}
-		case "sync-pi": {
-			const installed = piVersion(paths);
-			if (installed === PI_VERSION) {
-				print(`pi ${installed} matches the helper`);
+		case "sync-omp": {
+			const installed = ompVersion(paths);
+			if (installed === OMP_VERSION) {
+				print(`omp ${installed} matches the helper`);
 				return 0;
 			}
-			print(`Installing pi ${PI_VERSION} (was ${installed || "missing"})…`);
-			await bunAddPi(paths, PI_VERSION, process.execPath, print);
+			print(`Installing omp ${OMP_VERSION} (was ${installed || "missing"})…`);
+			await bunAddOmp(paths, OMP_VERSION, process.execPath, print);
 			return 0;
 		}
 		case "version":

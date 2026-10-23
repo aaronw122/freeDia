@@ -4,23 +4,22 @@ import {
 	cutWords,
 	deleteSessionFiles,
 	listChats,
-	messageText,
 	pageTitleOf,
 	questionOf,
 	sessionFiles,
 } from "./chats";
 import { splitLines } from "./framing";
-import { type FreediaPaths, pageFile } from "./paths";
 import {
-	authCheck,
 	chatLaunchArgs,
-	type PiConfig,
-	type PiProcess,
-	piInstalled,
-	piVersion,
+	type OmpConfig,
+	type OmpProcess,
+	ompInstalled,
+	ompVersion,
 	runOneShot,
-	spawnPi,
-} from "./pi";
+	runTitle,
+	spawnOmp,
+} from "./omp";
+import { type FreediaPaths, pageFile } from "./paths";
 import {
 	type Envelope,
 	type ForwardedRpc,
@@ -33,7 +32,7 @@ import {
 	isHelperCommand,
 	MAX_EXTENSION_MESSAGE_BYTES,
 	MAX_PAGE_BYTES,
-	type PiRpcRecord,
+	type OmpRpcRecord,
 } from "./protocol";
 
 export const DEFAULT_MAX_CONCURRENT = 3;
@@ -43,11 +42,11 @@ const TITLE_TIMEOUT_MS = 60_000;
 const MODELS_TIMEOUT_MS = 30_000;
 const STDERR_TAIL = 4000;
 const TITLE_SLOT = "title:";
-const NO_API_KEY = "No API key found";
+const RPC_REASSEMBLY_CAP = 64 * 1024 * 1024;
 
 export const FIX_TEXT: Record<HelperErrorCode, string> = {
-	pi_missing:
-		"Run `bunx freedia install` in Terminal to reinstall the helper and pi.",
+	omp_missing:
+		"Run `bunx freedia install` in Terminal to reinstall the helper and omp.",
 	not_signed_in: "Run `bunx freedia login` in Terminal and sign in.",
 	spawn_failed: "Run `bunx freedia doctor` in Terminal to check the install.",
 };
@@ -90,11 +89,11 @@ export interface Updater {
 
 export interface HelperOptions {
 	paths: FreediaPaths;
-	pi: PiConfig;
+	omp: OmpConfig;
 	output: Output;
 	helperVersion: string;
-	pinnedPiVersion: string;
-	installPi: (version: string) => Promise<void>;
+	pinnedOmpVersion: string;
+	installOmp: (version: string) => Promise<void>;
 	afterUpdate?: () => Promise<void>;
 	updater?: Updater;
 	now?: () => number;
@@ -103,7 +102,7 @@ export interface HelperOptions {
 
 interface ChatProcess {
 	chatId: string;
-	proc: PiProcess;
+	proc: OmpProcess;
 	provider: string | undefined;
 	pendingResponses: number;
 	userPending: Array<string | undefined>;
@@ -112,6 +111,17 @@ interface ChatProcess {
 	stdinClosed: boolean;
 	stderrTail: string;
 	exited: Promise<void>;
+	bound: boolean;
+	queued: OmpRpcRecord[];
+	chunks: Map<
+		string,
+		{
+			count: number;
+			expectedBytes: number;
+			receivedBytes: number;
+			parts: Map<number, Uint8Array>;
+		}
+	>;
 }
 
 interface QueuedPrompt {
@@ -121,11 +131,11 @@ interface QueuedPrompt {
 
 export class Helper {
 	private readonly paths: FreediaPaths;
-	private readonly pi: PiConfig;
+	private readonly omp: OmpConfig;
 	private readonly output: Output;
 	private readonly helperVersion: string;
-	private pinnedPiVersion: string | undefined;
-	private readonly installPi: (version: string) => Promise<void>;
+	private pinnedOmpVersion: string | undefined;
+	private readonly installOmp: (version: string) => Promise<void>;
 	private readonly afterUpdate: (() => Promise<void>) | undefined;
 	private readonly updater: Updater | undefined;
 	private readonly now: () => number;
@@ -140,8 +150,8 @@ export class Helper {
 	private readonly pendingModels = new Map<string, string>();
 	private lastChosenModel: string | undefined;
 	private readonly checkedProviders = new Set<string>();
-	private models: Promise<PiRpcRecord | undefined> | undefined;
-	private piJob: Promise<void> | undefined;
+	private models: Promise<OmpRpcRecord | undefined> | undefined;
+	private ompJob: Promise<void> | undefined;
 	private readonly titled = new Set<string>();
 	private titleBacklog: string[] = [];
 	private readonly pendingTitles = new Map<string, string>();
@@ -152,18 +162,19 @@ export class Helper {
 
 	constructor(options: HelperOptions) {
 		this.paths = options.paths;
-		this.pi = options.pi;
+		this.omp = options.omp;
 		this.output = options.output;
 		this.helperVersion = options.helperVersion;
-		this.pinnedPiVersion = options.pinnedPiVersion;
-		this.installPi = options.installPi;
+		this.pinnedOmpVersion = options.pinnedOmpVersion;
+		this.installOmp = options.installOmp;
 		this.afterUpdate = options.afterUpdate;
 		this.updater = options.updater;
 		this.now = options.now ?? Date.now;
 		this.log = options.log ?? (() => {});
 		rmSync(this.paths.pages, { recursive: true, force: true });
 		mkdirSync(this.paths.pages, { recursive: true });
-		this.ensurePi().catch((error) => this.log(`pi sync failed: ${error}`));
+		mkdirSync(this.paths.fakeHome, { recursive: true });
+		this.ensureOmp().catch((error) => this.log(`omp sync failed: ${error}`));
 	}
 
 	handle(message: unknown): Promise<void> {
@@ -184,10 +195,10 @@ export class Helper {
 					type: "helper.hello",
 					id: message.id,
 					helperVersion: this.helperVersion,
-					piVersion: piVersion(this.paths),
+					ompVersion: ompVersion(this.paths),
 				});
-				if (!piInstalled(this.paths)) {
-					this.output.message(this.error("pi_missing"));
+				if (!ompInstalled(this.paths)) {
+					this.output.message(this.error("omp_missing"));
 				}
 				this.drainQueue();
 				this.updater
@@ -359,7 +370,7 @@ export class Helper {
 			this.slots.size === 0 &&
 			this.starting.size === 0 &&
 			this.jobs.size === 0 &&
-			this.piJob === undefined &&
+			this.ompJob === undefined &&
 			this.queue.length === 0
 		);
 	}
@@ -379,11 +390,11 @@ export class Helper {
 			return;
 		}
 		if (!this.shuttingDown && this.updater?.applyIfReady() === true) {
-			this.pinnedPiVersion = undefined;
-			if (this.afterUpdate !== undefined && this.piJob === undefined) {
-				this.piJob = this.afterUpdate();
-				this.ensurePi().catch((error) =>
-					this.log(`pi sync after update failed: ${error}`),
+			this.pinnedOmpVersion = undefined;
+			if (this.afterUpdate !== undefined && this.ompJob === undefined) {
+				this.ompJob = this.afterUpdate();
+				this.ensureOmp().catch((error) =>
+					this.log(`omp sync after update failed: ${error}`),
 				);
 			}
 		}
@@ -394,35 +405,33 @@ export class Helper {
 		}
 	}
 
-	private async ensurePi(): Promise<void> {
-		if (this.piJob === undefined) {
-			const installed = piVersion(this.paths);
+	private async ensureOmp(): Promise<void> {
+		if (this.ompJob === undefined) {
+			const installed = ompVersion(this.paths);
 			if (
 				installed === "" ||
-				this.pinnedPiVersion === undefined ||
-				installed === this.pinnedPiVersion
-			) {
+				this.pinnedOmpVersion === undefined ||
+				installed === this.pinnedOmpVersion
+			)
 				return;
-			}
 			this.log(
-				`pi ${installed} installed, helper pins ${this.pinnedPiVersion}`,
+				`omp ${installed} installed, helper pins ${this.pinnedOmpVersion}`,
 			);
-			const pinned = this.pinnedPiVersion;
-			this.piJob = this.installPi(pinned).then(() => {
-				const now = piVersion(this.paths);
-				if (now !== pinned) {
+			const pinned = this.pinnedOmpVersion;
+			this.ompJob = this.installOmp(pinned).then(() => {
+				const now = ompVersion(this.paths);
+				if (now !== pinned)
 					throw new Error(
-						`pi is ${now || "missing"} after installing ${pinned}`,
+						`omp is ${now || "missing"} after installing ${pinned}`,
 					);
-				}
 			});
 		}
-		const job = this.piJob;
+		const job = this.ompJob;
 		try {
 			await job;
 		} finally {
-			if (this.piJob === job) {
-				this.piJob = undefined;
+			if (this.ompJob === job) {
+				this.ompJob = undefined;
 				this.checkIdle();
 			}
 		}
@@ -447,11 +456,11 @@ export class Helper {
 	): HelperError {
 		const message =
 			extra.message ??
-			(code === "pi_missing"
-				? "pi is not installed in ~/.freedia/pi."
+			(code === "omp_missing"
+				? "omp is not installed in ~/.freedia/omp."
 				: code === "not_signed_in"
-					? "Not signed in to the selected provider."
-					: "The helper could not start pi.");
+					? "Not signed in to a provider."
+					: "The helper could not start omp.");
 		return {
 			type: "helper.error",
 			...(extra.id === undefined ? {} : { id: extra.id }),
@@ -462,12 +471,12 @@ export class Helper {
 		};
 	}
 
-	private reply(chatId: string, rpc: PiRpcRecord): void {
+	private reply(chatId: string, rpc: OmpRpcRecord): void {
 		const envelope: Envelope = { chatId, rpc };
 		this.output.message(envelope);
 	}
 
-	private response(rpc: PiRpcRecord, command: string): PiRpcRecord {
+	private response(rpc: OmpRpcRecord, command: string): OmpRpcRecord {
 		return {
 			...(rpc.id === undefined ? {} : { id: rpc.id }),
 			type: "response",
@@ -477,8 +486,8 @@ export class Helper {
 	}
 
 	private async forward(chatId: string, rpc: ForwardedRpc): Promise<void> {
-		if (!piInstalled(this.paths)) {
-			this.output.message(this.error("pi_missing", { id: rpc.id, chatId }));
+		if (!ompInstalled(this.paths)) {
+			this.output.message(this.error("omp_missing", { id: rpc.id, chatId }));
 			return;
 		}
 		const live = this.liveProcess(chatId);
@@ -536,30 +545,98 @@ export class Helper {
 		chatId: string,
 		rpc: ForwardedRpc,
 	): Promise<HelperError | undefined> {
-		if (!piInstalled(this.paths)) {
-			return this.error("pi_missing", { id: rpc.id, chatId });
-		}
+		if (!ompInstalled(this.paths))
+			return this.error("omp_missing", { id: rpc.id, chatId });
+		if (this.checkedProviders.has("authenticated")) return undefined;
+		const records = await this.oneShot(
+			{ id: "auth", type: "get_login_providers" },
+			(record) => record.type === "response",
+			MODELS_TIMEOUT_MS,
+		);
+		const response = records.find(
+			(record) => record.command === "get_login_providers",
+		);
+		const data = response?.data;
+		const providers =
+			data && typeof data === "object" && "providers" in data
+				? data.providers
+				: undefined;
 		const provider = this.launchModel(chatId)?.split("/")[0];
-		if (provider === undefined || this.checkedProviders.has(provider)) {
-			return undefined;
+		const loginProviders = Array.isArray(providers) ? providers : [];
+		const authenticated = loginProviders.some(
+			(candidate) =>
+				candidate &&
+				typeof candidate === "object" &&
+				"authenticated" in candidate &&
+				candidate.authenticated === true,
+		);
+		const selectedLogin = loginProviders.find(
+			(candidate) =>
+				candidate &&
+				typeof candidate === "object" &&
+				"id" in candidate &&
+				candidate.id === provider,
+		);
+		let keylessCustom = false;
+		if (
+			!authenticated &&
+			(provider === undefined || selectedLogin === undefined)
+		) {
+			const models = await this.oneShot(
+				{ id: "auth-models", type: "get_available_models" },
+				(record) => record.type === "response",
+				MODELS_TIMEOUT_MS,
+			);
+			const modelResponse = models.find(
+				(record) => record.command === "get_available_models",
+			);
+			const modelData = modelResponse?.data;
+			const available =
+				modelData && typeof modelData === "object" && "models" in modelData
+					? modelData.models
+					: undefined;
+			const loginIds = new Set(
+				loginProviders.flatMap((candidate) =>
+					candidate &&
+					typeof candidate === "object" &&
+					"id" in candidate &&
+					typeof candidate.id === "string"
+						? [candidate.id]
+						: [],
+				),
+			);
+			keylessCustom =
+				Array.isArray(available) &&
+				available.some(
+					(model) =>
+						model &&
+						typeof model === "object" &&
+						"provider" in model &&
+						typeof model.provider === "string" &&
+						(provider === undefined
+							? !loginIds.has(model.provider)
+							: model.provider === provider),
+				);
 		}
-		const auth = await authCheck(this.pi, provider);
-		if (auth.status === "not_ready" || auth.status === "invalid") {
-			return this.error("not_signed_in", {
-				id: rpc.id,
-				chatId,
-				message: `Not signed in to ${provider}.`,
-				fix: `Run \`bunx freedia login\` in Terminal and sign in to ${provider}.`,
-			});
-		}
-		this.checkedProviders.add(provider);
+		if (!authenticated && !keylessCustom)
+			return this.error("not_signed_in", { id: rpc.id, chatId });
+		this.checkedProviders.add("authenticated");
 		return undefined;
 	}
 
 	private async startPrompt(chatId: string, rpc: ForwardedRpc): Promise<void> {
 		let chat = this.liveProcess(chatId);
 		if (chat === undefined) {
-			const problem = await this.preflight(chatId, rpc);
+			let problem: HelperError | undefined;
+			try {
+				problem = await this.preflight(chatId, rpc);
+			} catch (error) {
+				problem = this.error("spawn_failed", {
+					id: rpc.id,
+					chatId,
+					message: `The helper could not start omp: ${error instanceof Error ? error.message : error}`,
+				});
+			}
 			if (problem !== undefined) {
 				if (!this.endStart(chatId)) {
 					this.output.message(problem);
@@ -582,7 +659,7 @@ export class Helper {
 
 	private async spawnOrReport(
 		chatId: string,
-		rpc: PiRpcRecord,
+		rpc: OmpRpcRecord,
 	): Promise<ChatProcess | undefined> {
 		try {
 			return await this.spawn(chatId);
@@ -591,7 +668,7 @@ export class Helper {
 				this.error("spawn_failed", {
 					id: rpc.id,
 					chatId,
-					message: `The helper could not start pi: ${error instanceof Error ? error.message : error}`,
+					message: `The helper could not start omp: ${error instanceof Error ? error.message : error}`,
 				}),
 			);
 			return undefined;
@@ -626,14 +703,11 @@ export class Helper {
 	}
 
 	private launchModel(chatId: string): string | undefined {
-		const session = chatSessionState(this.paths, chatId);
-		if (session !== undefined) {
-			return session.model;
-		}
+		if (sessionFiles(this.paths, chatId).length > 0) return undefined;
 		return (
 			this.pendingModels.get(chatId) ??
 			this.lastChosenModel ??
-			this.pi.defaultModel
+			this.omp.defaultModel
 		);
 	}
 
@@ -643,18 +717,14 @@ export class Helper {
 			await previous.exited;
 		}
 		try {
-			await this.ensurePi();
+			await this.ensureOmp();
 		} catch (error) {
 			throw new Error(
-				`updating pi to ${this.pinnedPiVersion ?? "the helper's version"} failed (${error instanceof Error ? error.message : error})`,
+				`updating omp to ${this.pinnedOmpVersion ?? "the helper's version"} failed (${error instanceof Error ? error.message : error})`,
 			);
 		}
-		const hadSession = sessionFiles(this.paths, chatId).length > 0;
-		if (hadSession) {
-			this.pendingModels.delete(chatId);
-		}
 		const model = await this.usableModel(this.launchModel(chatId));
-		const proc = spawnPi(this.pi, chatLaunchArgs(this.pi, chatId, model));
+		const proc = spawnOmp(this.omp, chatLaunchArgs(this.omp, chatId, model));
 		const chat: ChatProcess = {
 			chatId,
 			proc,
@@ -666,9 +736,12 @@ export class Helper {
 			stdinClosed: false,
 			stderrTail: "",
 			exited: Promise.resolve(),
+			bound: false,
+			queued: [],
+			chunks: new Map(),
 		};
 		this.processes.set(chatId, chat);
-		const lines = splitLines((line) => this.onPiLine(chat, line));
+		const lines = splitLines((line) => this.onOmpLine(chat, line));
 		const reading = (async () => {
 			for await (const chunk of proc.stdout) {
 				lines.push(chunk);
@@ -698,21 +771,34 @@ export class Helper {
 		return chat;
 	}
 
-	private send(chat: ChatProcess, rpc: PiRpcRecord): void {
-		chat.pendingResponses++;
-		if (!(typeof rpc.id === "string" && rpc.id.startsWith(INTERNAL_PREFIX))) {
-			chat.userPending.push(rpc.id);
+	private send(chat: ChatProcess, rpc: OmpRpcRecord): void {
+		if (
+			!chat.bound &&
+			rpc.type !== "negotiate_protocol" &&
+			rpc.type !== "open_session"
+		) {
+			chat.queued.push(rpc);
+			return;
 		}
+		chat.pendingResponses++;
+		if (!(typeof rpc.id === "string" && rpc.id.startsWith(INTERNAL_PREFIX)))
+			chat.userPending.push(rpc.id);
 		try {
 			chat.proc.stdin.write(`${JSON.stringify(rpc)}\n`);
 			chat.proc.stdin.flush();
 		} catch (error) {
-			this.log(`write to pi failed: ${error}`);
+			this.log(`write to omp failed: ${error}`);
 		}
 	}
 
 	private closeIfIdle(chat: ChatProcess): void {
-		if (chat.stdinClosed || chat.pendingResponses > 0 || chat.runActive) {
+		if (
+			chat.stdinClosed ||
+			!chat.bound ||
+			chat.queued.length > 0 ||
+			chat.pendingResponses > 0 ||
+			chat.runActive
+		) {
 			return;
 		}
 		chat.stdinClosed = true;
@@ -721,26 +807,44 @@ export class Helper {
 		} catch {}
 	}
 
-	private onPiLine(chat: ChatProcess, line: string): void {
-		let record: PiRpcRecord;
+	private onOmpLine(chat: ChatProcess, line: string): void {
+		let record: OmpRpcRecord;
 		try {
 			record = JSON.parse(line);
 		} catch {
-			this.log(`unparseable pi output for ${chat.chatId}`);
+			this.log(`unparseable omp output for ${chat.chatId}`);
 			return;
+		}
+		if (record.type === "rpc_chunk") {
+			this.onChunk(chat, record);
+			return;
+		}
+		if (record.type === "ready") {
+			this.send(chat, {
+				id: `${INTERNAL_PREFIX}protocol`,
+				type: "negotiate_protocol",
+				protocolVersion: 2,
+			});
+			const recoveryModel = this.pendingModels.get(chat.chatId);
+			const [provider, modelId] = recoveryModel?.split("/") ?? [];
+			this.send(chat, {
+				id: `${INTERNAL_PREFIX}open`,
+				type: "open_session",
+				sessionDir: `${this.paths.chats}/${chat.chatId}`,
+				...(provider === undefined || modelId === undefined
+					? {}
+					: { provider, modelId }),
+			});
 		}
 		const internal =
 			(typeof record.id === "string" &&
 				record.id.startsWith(INTERNAL_PREFIX)) ||
 			record.type === "session_info_changed";
-		if (!internal) {
-			this.output.envelopeJson(chat.chatId, line);
-		}
-		if (record.type === "response") {
-			this.onResponse(chat, record, internal);
-		} else if (record.type === "agent_start") {
-			chat.runActive = true;
-		} else if (record.type === "agent_settled") {
+		if (!internal && record.type !== "ready")
+			this.output.envelopeJson(chat.chatId, JSON.stringify(record));
+		if (record.type === "response") this.onResponse(chat, record, internal);
+		else if (record.type === "agent_start") chat.runActive = true;
+		else if (record.type === "session_settled") {
 			chat.runActive = false;
 			chat.runId = undefined;
 			this.releaseSlot(chat.chatId);
@@ -749,9 +853,92 @@ export class Helper {
 		this.closeIfIdle(chat);
 	}
 
+	private onChunk(chat: ChatProcess, record: OmpRpcRecord): void {
+		const { chunkId, index, count, byteLength, data } = record;
+		if (
+			typeof chunkId !== "string" ||
+			!Number.isInteger(index) ||
+			!Number.isInteger(count) ||
+			!Number.isInteger(byteLength) ||
+			typeof data !== "string"
+		) {
+			this.rejectChunk(chat, typeof chunkId === "string" ? chunkId : undefined);
+			return;
+		}
+		const partIndex = index as number;
+		const partCount = count as number;
+		const expectedBytes = byteLength as number;
+		if (
+			partIndex < 0 ||
+			partCount < 2 ||
+			partIndex >= partCount ||
+			expectedBytes < 1 ||
+			expectedBytes > RPC_REASSEMBLY_CAP
+		) {
+			this.rejectChunk(chat, chunkId);
+			return;
+		}
+		const bytes = Uint8Array.from(Buffer.from(data, "base64"));
+		if (bytes.byteLength > 256 * 1024) {
+			this.rejectChunk(chat, chunkId);
+			return;
+		}
+		const item = chat.chunks.get(chunkId) ?? {
+			count: partCount,
+			expectedBytes,
+			receivedBytes: 0,
+			parts: new Map<number, Uint8Array>(),
+		};
+		if (
+			item.count !== partCount ||
+			item.expectedBytes !== expectedBytes ||
+			item.parts.has(partIndex) ||
+			item.receivedBytes + bytes.byteLength > expectedBytes
+		) {
+			this.rejectChunk(chat, chunkId);
+			return;
+		}
+		item.parts.set(partIndex, bytes);
+		item.receivedBytes += bytes.byteLength;
+		chat.chunks.set(chunkId, item);
+		if (item.parts.size !== item.count) return;
+		if (
+			item.receivedBytes !== item.expectedBytes ||
+			Array.from({ length: item.count }, (_, part) =>
+				item.parts.has(part),
+			).includes(false)
+		) {
+			this.rejectChunk(chat, chunkId);
+			return;
+		}
+		const joined = Buffer.concat(
+			Array.from({ length: item.count }, (_, part) =>
+				Buffer.from(item.parts.get(part) as Uint8Array),
+			),
+		);
+		chat.chunks.delete(chunkId);
+		this.onOmpLine(chat, joined.toString("utf8"));
+	}
+
+	private rejectChunk(chat: ChatProcess, chunkId: string | undefined): void {
+		if (chunkId !== undefined) chat.chunks.delete(chunkId);
+		const id = chat.userPending[0];
+		this.output.message(
+			this.error("spawn_failed", {
+				id,
+				chatId: chat.chatId,
+				message: "omp sent an invalid chunked RPC frame.",
+			}),
+		);
+		chat.pendingResponses = 0;
+		chat.userPending = [];
+		chat.stdinClosed = true;
+		chat.proc.stdin.end();
+	}
+
 	private onResponse(
 		chat: ChatProcess,
-		record: PiRpcRecord,
+		record: OmpRpcRecord,
 		internal: boolean,
 	): void {
 		chat.pendingResponses = Math.max(0, chat.pendingResponses - 1);
@@ -759,25 +946,52 @@ export class Helper {
 			const index = chat.userPending.indexOf(record.id);
 			chat.userPending.splice(index >= 0 ? index : 0, 1);
 		}
+		if (record.command === "open_session") {
+			if (record.success !== true) {
+				const message =
+					typeof record.error === "string"
+						? record.error
+						: "omp could not open the chat session.";
+				for (const command of chat.queued) {
+					if (
+						command.type === "set_model" &&
+						typeof command.provider === "string" &&
+						typeof command.modelId === "string"
+					) {
+						this.pendingModels.set(
+							chat.chatId,
+							`${command.provider}/${command.modelId}`,
+						);
+					}
+					if (
+						typeof command.id === "string" &&
+						!command.id.startsWith(INTERNAL_PREFIX)
+					) {
+						this.output.message(
+							this.error("spawn_failed", {
+								id: command.id,
+								chatId: chat.chatId,
+								message,
+							}),
+						);
+					}
+				}
+				chat.queued = [];
+				chat.stdinClosed = true;
+				chat.proc.stdin.end();
+				return;
+			}
+			chat.bound = true;
+			this.pendingModels.delete(chat.chatId);
+			const queued = chat.queued.splice(0);
+			for (const command of queued) this.send(chat, command);
+		}
 		if (record.command === "prompt") {
-			const data = record.data as { disposition?: unknown } | undefined;
-			if (
-				record.success === true &&
-				(data?.disposition === "started" || data?.disposition === "queued")
-			) {
+			if (record.success === true) {
 				chat.runActive = true;
 				chat.runId ??= record.id;
-			} else {
-				if (
-					typeof record.error === "string" &&
-					record.error.startsWith(NO_API_KEY) &&
-					chat.provider !== undefined
-				) {
-					this.checkedProviders.delete(chat.provider);
-				}
-				if (!chat.runActive) {
-					this.releaseSlot(chat.chatId);
-				}
+			} else if (!chat.runActive) {
+				this.releaseSlot(chat.chatId);
 			}
 		}
 		if (record.command === "set_model" && record.success === true) {
@@ -802,7 +1016,8 @@ export class Helper {
 	}
 
 	private onExit(chat: ChatProcess, code: number): void {
-		if (this.processes.get(chat.chatId) === chat) {
+		const owned = this.processes.get(chat.chatId) === chat;
+		if (owned) {
 			this.processes.delete(chat.chatId);
 		}
 		if (chat.runActive || chat.userPending.length > 0) {
@@ -811,12 +1026,12 @@ export class Helper {
 				this.error("spawn_failed", {
 					id: chat.runId ?? chat.userPending[0],
 					chatId: chat.chatId,
-					message: `pi stopped unexpectedly (exit code ${code}) before finishing.${reason === "" ? "" : ` ${reason}`}`,
+					message: `omp stopped unexpectedly (exit code ${code}) before finishing.${reason === "" ? "" : ` ${reason}`}`,
 					fix: "Send the message again. If it keeps happening, run `bunx freedia doctor` in Terminal.",
 				}),
 			);
 		}
-		this.releaseSlot(chat.chatId);
+		if (owned && !this.starting.has(chat.chatId)) this.releaseSlot(chat.chatId);
 		if (this.pendingTitles.has(chat.chatId) && !this.isQueued(chat.chatId)) {
 			this.track(this.inChain(chat.chatId, () => this.applyTitle(chat.chatId)));
 		}
@@ -831,7 +1046,10 @@ export class Helper {
 		if (chat === undefined) {
 			return;
 		}
-		if (chat.runActive && !chat.stdinClosed) {
+		if (
+			!chat.stdinClosed &&
+			(chat.runActive || this.slots.has(chatId) || this.starting.has(chatId))
+		) {
 			this.send(chat, {
 				id: `${INTERNAL_PREFIX}abort-${crypto.randomUUID()}`,
 				type: "abort",
@@ -848,18 +1066,16 @@ export class Helper {
 	}
 
 	private async oneShot(
-		model: string | undefined,
-		command: PiRpcRecord,
-		until: (record: PiRpcRecord) => boolean,
+		command: OmpRpcRecord,
+		until: (record: OmpRpcRecord) => boolean,
 		timeoutMs: number,
-	): Promise<PiRpcRecord[]> {
-		await this.ensurePi();
-		return runOneShot(this.pi, model, command, until, timeoutMs);
+	): Promise<OmpRpcRecord[]> {
+		await this.ensureOmp();
+		return runOneShot(this.omp, command, until, timeoutMs);
 	}
 
-	private async answerModels(chatId: string, rpc: PiRpcRecord): Promise<void> {
+	private async answerModels(chatId: string, rpc: OmpRpcRecord): Promise<void> {
 		this.models ??= this.oneShot(
-			undefined,
 			{ id: "models", type: "get_available_models" },
 			(record) => record.type === "response",
 			MODELS_TIMEOUT_MS,
@@ -991,25 +1207,11 @@ export class Helper {
 			`Page title: ${pageTitleOf(firstPrompt)}`,
 			`Question: ${questionOf(firstPrompt)}`,
 		].join("\n");
-		const records = await this.oneShot(
-			model,
-			{ id: "title", type: "prompt", message },
-			(record) =>
-				record.type === "agent_settled" ||
-				(record.type === "response" && record.success === false),
-			TITLE_TIMEOUT_MS,
-		);
-		const reply = records.findLast(
-			(record) =>
-				record.type === "message_end" &&
-				(record.message as { role?: unknown } | undefined)?.role ===
-					"assistant",
-		)?.message as { content?: unknown; stopReason?: unknown } | undefined;
-		if (reply === undefined || reply.stopReason !== "stop") {
-			return undefined;
-		}
+		await this.ensureOmp();
+		const stdout = await runTitle(this.omp, model, message, TITLE_TIMEOUT_MS);
+		if (stdout === undefined) return undefined;
 		const title = cutWords(
-			(messageText(reply.content).trim().split("\n")[0] ?? "")
+			(stdout.split("\n")[0] ?? "")
 				.replace(/^[#*\s"'“”]+|["'“”*\s.]+$/g, "")
 				.trim(),
 		);

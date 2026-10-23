@@ -10,8 +10,10 @@ interface SessionEntry {
 	id?: unknown;
 	timestamp?: unknown;
 	name?: unknown;
+	title?: unknown;
 	provider?: unknown;
 	modelId?: unknown;
+	model?: unknown;
 	message?: {
 		role?: unknown;
 		content?: unknown;
@@ -21,12 +23,11 @@ interface SessionEntry {
 }
 
 export function sessionFiles(paths: FreediaPaths, chatId: string): string[] {
-	if (!existsSync(paths.chats)) {
-		return [];
-	}
-	return readdirSync(paths.chats)
-		.filter((name) => name.endsWith(`_${chatId}.jsonl`))
-		.map((name) => join(paths.chats, name));
+	const directory = join(paths.chats, chatId);
+	if (!existsSync(directory)) return [];
+	return readdirSync(directory)
+		.filter((name) => name.endsWith(".jsonl"))
+		.map((name) => join(directory, name));
 }
 
 function readEntries(file: string): SessionEntry[] {
@@ -101,22 +102,29 @@ export interface SessionState {
 
 export function readSession(file: string): SessionState {
 	const entries = readEntries(file);
-	const header = entries[0];
+	const header = entries.find((entry) => entry.type === "session");
 	let name: string | undefined;
 	let updatedAt: string | undefined;
 	let model: string | undefined;
 	let userMessages = 0;
 	let firstReplyTurn: number | undefined;
 	for (const entry of entries) {
-		if (entry.type === "session_info" && typeof entry.name === "string") {
-			name = entry.name;
-		}
 		if (
-			entry.type === "model_change" &&
-			typeof entry.provider === "string" &&
-			typeof entry.modelId === "string"
+			(entry.type === "title" || entry.type === "title_change") &&
+			typeof entry.title === "string" &&
+			entry.title !== ""
 		) {
-			model = `${entry.provider}/${entry.modelId}`;
+			name = entry.title;
+		}
+		if (entry.type === "model_change") {
+			if (typeof entry.model === "string") {
+				model = entry.model;
+			} else if (
+				typeof entry.provider === "string" &&
+				typeof entry.modelId === "string"
+			) {
+				model = `${entry.provider}/${entry.modelId}`;
+			}
 		}
 		if (entry.type === "message") {
 			if (typeof entry.timestamp === "string") {
@@ -167,18 +175,12 @@ export function listChats(paths: FreediaPaths): ChatSummary[] {
 	if (!existsSync(paths.chats)) {
 		return [];
 	}
-	const chats = new Map<string, ChatSummary>();
-	for (const name of readdirSync(paths.chats).sort()) {
-		const match = /^[^_]+_(.+)\.jsonl$/.exec(name);
-		const chatId = match?.[1];
-		if (!isChatId(chatId)) {
-			continue;
-		}
-		const session = readSession(join(paths.chats, name));
-		if (session.id !== chatId || session.firstPrompt === undefined) {
-			continue;
-		}
-		chats.set(chatId, {
+	const chats: ChatSummary[] = [];
+	for (const chatId of readdirSync(paths.chats).sort()) {
+		if (!isChatId(chatId)) continue;
+		const session = chatSessionState(paths, chatId);
+		if (session === undefined || session.firstPrompt === undefined) continue;
+		chats.push({
 			chatId,
 			title: session.name ?? cutWords(questionOf(session.firstPrompt)),
 			updatedAt: session.updatedAt ?? session.headerTimestamp ?? "",
@@ -190,7 +192,5 @@ export function listChats(paths: FreediaPaths): ChatSummary[] {
 }
 
 export function deleteSessionFiles(paths: FreediaPaths, chatId: string): void {
-	for (const file of sessionFiles(paths, chatId)) {
-		rmSync(file, { force: true });
-	}
+	rmSync(join(paths.chats, chatId), { recursive: true, force: true });
 }

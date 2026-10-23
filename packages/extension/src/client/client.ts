@@ -3,7 +3,7 @@ import type {
 	ExtensionToHelper,
 	ForwardedRpcType,
 	HelperToExtension,
-	PiRpcRecord,
+	OmpRpcRecord,
 } from "freedia/protocol";
 import { MAX_PAGE_BYTES } from "freedia/protocol";
 import type { TabToWorker, WorkerToTab } from "../lib/messages";
@@ -49,14 +49,14 @@ interface Pending {
 	reject(error: Error): void;
 }
 
-interface PiModel {
+interface OmpModel {
 	id: string;
 	name: string;
 	provider: string;
 	contextWindow: number;
 }
 
-function toModelInfo(model: PiModel): ModelInfo {
+function toModelInfo(model: OmpModel): ModelInfo {
 	return {
 		provider: model.provider,
 		modelId: model.id,
@@ -206,7 +206,7 @@ export class RealChatClient implements ChatClient {
 	async listModels(): Promise<ModelInfo[]> {
 		await this.ready;
 		const data = await this.rpc(this.chatId, { type: "get_available_models" });
-		const models = (data.models ?? []) as PiModel[];
+		const models = (data.models ?? []) as OmpModel[];
 		return models.map(toModelInfo);
 	}
 
@@ -226,7 +226,7 @@ export class RealChatClient implements ChatClient {
 				provider: model.provider,
 				modelId: model.modelId,
 			});
-			this.model = toModelInfo(data as unknown as PiModel);
+			this.model = toModelInfo(data as unknown as OmpModel);
 		});
 		this.modelChange = change.catch(() => undefined);
 		return change;
@@ -241,13 +241,13 @@ export class RealChatClient implements ChatClient {
 		return reply.chats as ChatSummary[];
 	}
 
-	async openChat(chatId: string): Promise<PiRpcRecord[]> {
+	async openChat(chatId: string): Promise<OmpRpcRecord[]> {
 		await this.ready;
 		if (chatId !== this.chatId) {
 			await this.switchChat({ type: "tab.openChat", chatId });
 		}
 		const data = await this.rpc(chatId, { type: "get_messages" });
-		return (data.messages ?? []) as PiRpcRecord[];
+		return (data.messages ?? []) as OmpRpcRecord[];
 	}
 
 	async deleteChat(chatId: string): Promise<void> {
@@ -414,8 +414,8 @@ export class RealChatClient implements ChatClient {
 	private async loadCurrentModel(): Promise<ModelInfo | null> {
 		const chatId = this.chatId;
 		const data = await this.rpc(chatId, { type: "get_state" });
-		const model = data.model as PiModel | undefined;
-		if (model === undefined || model.id === "unknown") {
+		const model = data.model as OmpModel | undefined;
+		if (model === undefined) {
 			return null;
 		}
 		const info = toModelInfo(model);
