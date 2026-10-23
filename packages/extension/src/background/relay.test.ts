@@ -43,7 +43,7 @@ class FakeNative implements NativePort {
 			type: "helper.hello",
 			id,
 			helperVersion: "0.1.0",
-			piVersion: "1.3.0",
+			ompVersion: "18.12.1",
 		});
 	}
 }
@@ -207,14 +207,14 @@ describe("relay", () => {
 		native().emit({
 			type: "helper.error",
 			code: "omp_missing",
-			message: "pi is missing",
+			message: "omp is missing",
 			fix: "Run bunx freedia install",
 		});
 		expect(tabA.helperMessages()).toEqual([
 			{
 				type: "helper.error",
 				code: "omp_missing",
-				message: "pi is missing",
+				message: "omp is missing",
 				fix: "Run bunx freedia install",
 			},
 		]);
@@ -223,7 +223,7 @@ describe("relay", () => {
 			{
 				type: "helper.error",
 				code: "omp_missing",
-				message: "pi is missing",
+				message: "omp is missing",
 				fix: "Run bunx freedia install",
 			},
 		]);
@@ -328,7 +328,7 @@ describe("relay", () => {
 		accepted(native(), CHAT_A, "a1");
 		native().emit({
 			chatId: CHAT_A,
-			rpc: { type: "agent_settled", aborted: false },
+			rpc: { type: "session_settled" },
 		});
 		tab.close();
 		expect(
@@ -337,7 +337,7 @@ describe("relay", () => {
 		expect(native().disconnected).toBe(true);
 	});
 
-	test("a run ends on agent_settled or a successful abort response, not on a failed abort", async () => {
+	test("a run ends on session_settled or a successful abort response, not on a failed abort", async () => {
 		const { relay, native } = setup();
 		const tab = await openTab(relay, 1);
 		native().answerHello();
@@ -391,7 +391,7 @@ describe("relay", () => {
 				type: "response",
 				command: "prompt",
 				success: false,
-				error: "No API key found for anthropic.",
+				error: "Model not found: anthropic/claude-sonnet-4-5",
 			},
 		});
 		tab.close();
@@ -417,7 +417,7 @@ describe("relay", () => {
 		expect(native().disconnected).toBe(true);
 	});
 
-	test("a helper spawn_failed after pi accepted the prompt ends the run", async () => {
+	test("a helper spawn_failed after omp accepted the prompt ends the run", async () => {
 		const { relay, native } = setup();
 		const tab = await openTab(relay, 1);
 		native().answerHello();
@@ -428,7 +428,7 @@ describe("relay", () => {
 			id: "a1",
 			chatId: CHAT_A,
 			code: "spawn_failed",
-			message: "pi exited",
+			message: "omp exited",
 			fix: "Try again",
 		});
 		tab.close();
@@ -452,7 +452,7 @@ describe("relay", () => {
 		expect(native().disconnected).toBe(false);
 		native().emit({
 			chatId: CHAT_A,
-			rpc: { type: "agent_settled", aborted: true },
+			rpc: { type: "prompt_result", status: "aborted" },
 		});
 		expect(native().disconnected).toBe(true);
 	});

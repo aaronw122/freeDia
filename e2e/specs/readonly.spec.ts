@@ -1,13 +1,13 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ChatPage } from "../fixtures/chat";
-import { chatIds, chatProcesses } from "../fixtures/env";
+import { chatProcesses, processEnv } from "../fixtures/env";
 import { expect, test } from "../fixtures/test";
 
 test.describe("ENSURE 11: read-only agent", () => {
 	test.use({ helperEnv: { FREEDIA_E2E_PROBE_API_KEY: "not-a-real-key" } });
 
-	test("pi runs with read-only tools, isolation flags and a clean environment", async ({
+	test("omp runs with read-only tools, isolation flags and a clean environment", async ({
 		freedia,
 		home,
 		site,
@@ -25,40 +25,32 @@ test.describe("ENSURE 11: read-only agent", () => {
 				line = chatProcesses(home)[0] ?? "";
 				return line;
 			})
-			.toContain("--session-id ");
-		const chatId = chatIds(home)[0] ?? "";
-		expect(line).toContain("--mode rpc");
-		expect(line).toContain(`--session-dir ${home.chats}`);
-		expect(line).toContain(`--session-id ${chatId}`);
-		expect(line).toContain("--tools read,grep,find,ls");
+			.toContain("--mode rpc");
+		expect(line).toContain(`--cwd ${home.root}`);
+		expect(line).not.toContain("--session-id");
+		expect(line).toContain("--tools read,grep,glob");
 		for (const flag of [
+			"--no-ui",
 			"--no-extensions",
 			"--no-skills",
-			"--no-prompt-templates",
-			"--no-context-files",
-			"--no-mcp",
-			"--no-themes",
+			"--no-rules",
+			"--no-lsp",
 		]) {
 			expect(line).toContain(flag);
 		}
 		expect(line).toContain("--append-system-prompt");
+
+		const pid = line.trim().split(/\s+/)[0] ?? "";
+		const env = processEnv(pid);
+		expect(env).toContain(`HOME=${join(home.root, "home")}`);
+		expect(env).toContain(
+			`PI_CODING_AGENT_DIR=${join(home.root, "omp-agent")}`,
+		);
+		expect(env).toContain("BUN_BE_BUN=1");
+		expect(env).not.toContain("FREEDIA_E2E_PROBE_API_KEY");
+		expect(env.match(/\b[A-Z0-9_]+_API_KEY=/g) ?? []).toEqual([]);
 		await chat.stopButton.click();
 		await expect(chat.dialog.getByText("Stopped")).toBeVisible();
-
-		const env = await chat.ask("Which environment do you run in? [[env]]");
-		await expect(env).toContainText(`HOME=${home.home}`);
-		await expect(env).toContainText(
-			`PI_CODING_AGENT_DIR=${join(home.root, "pi-agent")}`,
-		);
-		await expect(env).toContainText(`cwd=${home.root}`);
-		const keys = ((await env.textContent()) ?? "")
-			.split("env keys: ")[1]
-			?.split("HOME=")[0]
-			?.trim()
-			.split(/\s+/);
-		expect(keys).toContain("BUN_BE_BUN");
-		expect(keys).not.toContain("FREEDIA_E2E_PROBE_API_KEY");
-		expect(keys?.filter((key) => /_API_KEY$|_TOKEN$/.test(key))).toEqual([]);
 	});
 
 	test("the model can read the page file but cannot run commands or write files", async ({
@@ -98,7 +90,7 @@ test.describe("ENSURE 11: read-only agent", () => {
 				(message: {
 					rpc?: { id?: string; type?: string; command?: string };
 				}) => {
-					if (message.rpc !== undefined) seen.push(message.rpc);
+					if (message.rpc?.type === "response") seen.push(message.rpc);
 					if (message.rpc?.id === "after") done.resolve();
 				},
 			);

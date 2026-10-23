@@ -1,7 +1,12 @@
 import { useLayoutEffect, useRef } from "react";
 import { CopyButton } from "./CopyButton";
 import { ErrorCard } from "./ErrorCard";
-import { helperErrorView, promptErrorView, replyErrorView } from "./errors";
+import {
+	actionErrorView,
+	helperErrorView,
+	promptErrorView,
+	replyErrorView,
+} from "./errors";
 import { Markdown } from "./Markdown";
 import {
 	type AssistantTurn,
@@ -130,12 +135,7 @@ export function MessageList({ state }: { state: TranscriptState }) {
 							? helperErrorView(error.error)
 							: error.source === "prompt"
 								? promptErrorView(error.message)
-								: {
-										title: error.title,
-										fix: "Try again.",
-										command: null,
-										detail: error.message || null,
-									}
+								: actionErrorView(error.title, error.message)
 					}
 				/>
 			)}

@@ -201,7 +201,7 @@ describe("prompt text", () => {
 		expect(prompt).not.toContain("Para 299 ");
 	});
 
-	test("an unreadable page tells pi no page text is available", () => {
+	test("an unreadable page tells omp no page text is available", () => {
 		const prompt = buildPrompt({
 			page: { ...PAGE, readability: "unreadable", markdown: "" },
 			quotes: ["quoted"],

@@ -440,6 +440,32 @@ function onRetryEnd(
 	return { ...next, retry: null };
 }
 
+function onPromptResult(
+	state: TranscriptState,
+	record: OmpRpcRecord,
+): TranscriptState {
+	if (record.status !== "error") return settle(state);
+	const error = asRecord(record.error);
+	const message = stringOrNull(error?.message);
+	const provider = stringOrNull(error?.provider);
+	const next = withOpenReply(state, (turn) => {
+		const failure: ReplySegment = {
+			parts: [],
+			stopReason: "error",
+			errorMessage: message,
+			provider,
+		};
+		return replyFailure(turn)
+			? withLastSegment(turn, (segment) => ({
+					...segment,
+					errorMessage: message ?? segment.errorMessage,
+					provider: provider ?? segment.provider,
+				}))
+			: { ...turn, segments: [...turn.segments, failure] };
+	});
+	return settle(next);
+}
+
 function onRpc(state: TranscriptState, record: OmpRpcRecord): TranscriptState {
 	switch (record.type) {
 		case "response":
@@ -487,7 +513,9 @@ function onRpc(state: TranscriptState, record: OmpRpcRecord): TranscriptState {
 			return onRetryStart(state, record);
 		case "auto_retry_end":
 			return onRetryEnd(state, record);
-		case "agent_settled":
+		case "prompt_result":
+			return onPromptResult(state, record);
+		case "session_settled":
 			return settle(state);
 		default:
 			return state;

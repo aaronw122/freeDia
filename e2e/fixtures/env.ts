@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
@@ -8,11 +8,11 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
-	symlinkSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
 	type BrowserContext,
@@ -36,32 +36,44 @@ export const HELPER_BINARY = join(
 	"dist",
 	"freedia-helper",
 );
-export const FAUX_EXTENSION = join(
+export const FAUX_SERVER = join(
 	REPO,
 	"packages",
 	"helper",
 	"test",
 	"fixtures",
-	"pi",
-	"faux-extension.ts",
+	"omp",
+	"faux-server.ts",
 );
+export const FAUX_PORT = 8791;
 export const EXTENSION_ID = "hnjcpmkohkooncneepdhfodblhhgimnh";
 export const NATIVE_HOST = "com.freedia.helper";
 export const FAUX_CONTEXT_WINDOW = 20_000;
-
-const PI_PACKAGE = realpathSync(
-	join(
-		REPO,
-		"packages",
-		"helper",
-		"node_modules",
-		"@earendil-works",
-		"pi-coding-agent",
-	),
-);
+const E2E_INSTALLER = join(REPO, "packages", "helper", "src", "install-e2e.ts");
 
 export function buildAll(): void {
 	execFileSync("bun", ["run", "build"], { cwd: REPO, stdio: "inherit" });
+}
+
+export async function startFauxServer(): Promise<ChildProcess> {
+	const child = spawn("bun", [FAUX_SERVER], {
+		env: {
+			...strippedEnv(),
+			FAUX_PORT: String(FAUX_PORT),
+			FREEDIA_FAUX_TPS: "60",
+			FREEDIA_FAUX_LATENCY_MS: "800",
+		},
+		stdio: "ignore",
+	});
+	for (let attempt = 0; attempt < 100; attempt++) {
+		try {
+			const response = await fetch(`http://127.0.0.1:${FAUX_PORT}/v1/models`);
+			if (response.ok) return child;
+		} catch {}
+		await sleep(50);
+	}
+	child.kill();
+	throw new Error("faux provider did not start");
 }
 
 export interface FreediaHome {
@@ -73,27 +85,26 @@ export interface FreediaHome {
 	log: string;
 }
 
-export function createHome(extraEnv: Record<string, string> = {}): FreediaHome {
+export async function createHome(
+	extraEnv: Record<string, string> = {},
+): Promise<FreediaHome> {
 	const home = realpathSync(mkdtempSync(join(tmpdir(), "freedia-e2e-home-")));
 	const root = join(home, ".freedia");
-	const piLink = join(
-		root,
-		"pi",
-		"node_modules",
-		"@earendil-works",
-		"pi-coding-agent",
+	const ompAgent = join(root, "omp-agent");
+	const fakeHome = join(root, "home");
+	mkdirSync(ompAgent, { recursive: true });
+	mkdirSync(fakeHome, { recursive: true });
+	writeFileSync(
+		join(ompAgent, "models.yml"),
+		`providers:\n  faux:\n    baseUrl: http://127.0.0.1:${FAUX_PORT}/v1\n    api: openai-completions\n    auth: none\n    models:\n      - id: faux-1\n        name: Faux One\n        contextWindow: ${FAUX_CONTEXT_WINDOW}\n        maxTokens: 8192\n      - id: faux-2\n        name: Faux Two\n        contextWindow: ${FAUX_CONTEXT_WINDOW}\n        maxTokens: 8192\n`,
 	);
-	mkdirSync(dirname(piLink), { recursive: true });
-	symlinkSync(PI_PACKAGE, piLink);
+	execFileSync("bun", [E2E_INSTALLER, home]);
 	const launcher = join(home, "freedia-helper-launcher.sh");
 	const log = join(home, "helper.log");
 	const env = {
 		HOME: home,
 		PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-		FREEDIA_PI_EXTRA_ARGS: `-e ${FAUX_EXTENSION} --offline --model faux/faux-1`,
-		FREEDIA_FAUX_CONTEXT: String(FAUX_CONTEXT_WINDOW),
-		FREEDIA_FAUX_TPS: "150",
-		FREEDIA_FAUX_LATENCY_MS: "600",
+		FREEDIA_OMP_EXTRA_ARGS: "--model faux/faux-1",
 		...extraEnv,
 	};
 	const assignments = Object.entries(env)
@@ -115,36 +126,65 @@ export function createHome(extraEnv: Record<string, string> = {}): FreediaHome {
 }
 
 export function sessionFiles(home: FreediaHome): string[] {
-	return existsSync(home.chats)
-		? readdirSync(home.chats).filter((name) => name.endsWith(".jsonl"))
-		: [];
+	if (!existsSync(home.chats)) return [];
+	return readdirSync(home.chats).flatMap((chatId) => {
+		const chatDir = join(home.chats, chatId);
+		return readdirSync(chatDir)
+			.filter((name) => name.endsWith(".jsonl"))
+			.map((name) => join(chatId, name));
+	});
 }
 
 export interface SessionEntry {
 	type: string;
 	id?: string;
 	name?: string;
-	message?: { role: string; content: unknown; stopReason?: string };
+	model?: string;
+	modelId?: string;
+	title?: string;
+	message?: {
+		role: string;
+		content: unknown;
+		stopReason?: string;
+		provider?: string;
+		model?: string;
+	};
 	[key: string]: unknown;
 }
 
 export function chatIds(home: FreediaHome): string[] {
-	return sessionFiles(home).map((name) => name.replace(/^.*_|\.jsonl$/g, ""));
+	return Array.from(
+		new Set(sessionFiles(home).map((name) => name.split("/")[0] ?? "")),
+	);
 }
 
 export function chatTitle(home: FreediaHome, chatId: string): string | null {
-	const info = sessionEntries(home, chatId).findLast(
-		(entry) => entry.type === "session_info",
-	);
-	return typeof info?.name === "string" ? info.name : null;
+	for (const file of sessionFiles(home).filter(
+		(name) => name.split("/")[0] === chatId,
+	)) {
+		const entries = readFileSync(join(home.chats, file), "utf8")
+			.split("\n")
+			.filter((line) => line.trim() !== "")
+			.map((line) => JSON.parse(line) as SessionEntry);
+		const title = entries.findLast(
+			(entry) => entry.type === "session_info" || entry.type === "title",
+		);
+		const value = title?.name ?? title?.title;
+		if (typeof value === "string" && value !== "") return value;
+	}
+	return null;
 }
 export function sessionEntries(
 	home: FreediaHome,
 	chatId: string,
 ): SessionEntry[] {
-	const file = sessionFiles(home).find((name) =>
-		name.endsWith(`_${chatId}.jsonl`),
-	);
+	const file = sessionFiles(home)
+		.filter((name) => name.split("/")[0] === chatId)
+		.sort(
+			(a, b) =>
+				statSync(join(home.chats, b)).size - statSync(join(home.chats, a)).size,
+		)
+		.at(0);
 	if (file === undefined) return [];
 	return readFileSync(join(home.chats, file), "utf8")
 		.split("\n")
@@ -168,7 +208,7 @@ export function userMessages(home: FreediaHome, chatId: string): string[] {
 		.map((entry) => contentText(entry.message?.content));
 }
 
-export function piProcesses(home: FreediaHome): string[] {
+export function ompProcesses(home: FreediaHome): string[] {
 	const out = execFileSync("ps", ["-axww", "-o", "pid=,command="], {
 		encoding: "utf8",
 	});
@@ -176,13 +216,13 @@ export function piProcesses(home: FreediaHome): string[] {
 		.split("\n")
 		.filter(
 			(line) =>
-				line.includes(join(home.root, "pi", "node_modules")) &&
+				line.includes(join(home.root, "omp", "node_modules")) &&
 				line.includes("--mode rpc"),
 		);
 }
 
 export function chatProcesses(home: FreediaHome): string[] {
-	return piProcesses(home).filter((line) => line.includes("--session-id "));
+	return ompProcesses(home);
 }
 
 export function helperPids(): string[] {
@@ -353,15 +393,15 @@ export function strippedEnv(): Record<string, string> {
 	return env;
 }
 
-export async function waitForNoPi(
+export async function waitForNoOmp(
 	home: FreediaHome,
 	timeoutMs = 15_000,
 ): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
-	while (piProcesses(home).length > 0) {
+	while (ompProcesses(home).length > 0) {
 		if (Date.now() > deadline) {
 			throw new Error(
-				`pi still running:\n${piProcesses(home).join("\n")}\n${readLog(home)}`,
+				`omp still running:\n${ompProcesses(home).join("\n")}\n${readLog(home)}`,
 			);
 		}
 		await sleep(200);

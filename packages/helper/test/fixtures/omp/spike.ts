@@ -170,7 +170,10 @@ const isResponse = (id: string) => (frame: Frame) =>
 	frame.type === "response" && frame.id === id;
 
 function summarize(label: string, value: unknown): void {
-	console.log(`### ${label}: ${JSON.stringify(value).slice(0, 500)}`);
+	const encoded = JSON.stringify(value);
+	console.log(
+		`### ${label}: ${encoded === undefined ? "undefined" : encoded.slice(0, 500)}`,
+	);
 }
 
 function firstText(message: unknown): unknown {
@@ -378,6 +381,30 @@ const chatDir = `${SPIKE}/chats/${CHAT}`;
 	const exists = statSync(`${SPIKE}/cwd`, { throwIfNoEntry: false });
 	summarize("cwd-intact", exists !== null);
 	summarize("exit-code", await rpc.close());
+}
+for (const [name, marker] of [
+	["provider-rejected-401", "## Question\n\n[[reject]]"],
+	["rate-limit", "## Question\n\n[[ratelimit]]"],
+] as const) {
+	const rpc = new Rpc(name, ["--tools", "read,grep,glob"]);
+	rpc.send({
+		id: "open",
+		type: "open_session",
+		sessionDir: `${SPIKE}/chats2/${randomUUID()}`,
+	});
+	await rpc.until(isResponse("open"), 30000);
+	rpc.send({
+		id: "sm",
+		type: "set_model",
+		provider: "faux",
+		modelId: "faux-1",
+	});
+	await rpc.until(isResponse("sm"), 30000);
+	rpc.send({ id: "provider-error", type: "prompt", message: marker });
+	await rpc.until(isResponse("provider-error"), 30000);
+	await rpc.until((frame) => frame.type === "session_settled", 180000);
+	summarize(`${name} prompt_result`, rpc.tail("prompt_result"));
+	summarize(`${name} exit-code`, await rpc.close());
 }
 {
 	const walk = (dir: string): string[] => {

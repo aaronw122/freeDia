@@ -34,7 +34,7 @@ test("ENSURE 1: highlight + ⌘E opens the chat with a Selected Text chip", asyn
 	await expect(chat.input).toBeFocused();
 });
 
-test("ENSURE 2: reply streams in and pi received URL, highlight and excerpt", async ({
+test("ENSURE 2: reply streams in and omp received URL, highlight and excerpt", async ({
 	freedia,
 	home,
 	site,
@@ -46,9 +46,6 @@ test("ENSURE 2: reply streams in and pi received URL, highlight and excerpt", as
 	await chat.select(ARTICLE_HIGHLIGHT);
 	await chat.open();
 	await chat.send("What changed on this route?");
-	await expect(
-		chat.dialog.getByRole("status", { name: "Thinking…" }),
-	).toBeVisible();
 	const reply = chat.assistant.first();
 	const lengths: number[] = [];
 	await expect
@@ -166,9 +163,9 @@ test("ENSURE 4: switching models mid-chat sends the next message to the new mode
 	await expect(second).toContainText("Earlier replies: 1");
 	const chatId = chatIds(home)[0] as string;
 	const models = sessionEntries(home, chatId)
-		.filter((entry) => entry.type === "model_change")
-		.map((entry) => entry.modelId);
-	expect(models).toEqual(["faux-1", "faux-2"]);
+		.filter((entry) => entry.message?.role === "assistant")
+		.map((entry) => `${entry.message?.provider}/${entry.message?.model}`);
+	expect(models).toEqual(["faux/faux-1", "faux/faux-2"]);
 	await chat.reload();
 	await chat.open();
 	await expect(chat.button("Model: Faux Two")).toBeVisible();

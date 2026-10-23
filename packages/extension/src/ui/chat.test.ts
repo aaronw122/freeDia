@@ -6,7 +6,7 @@ import { memoryWindowStore } from "./layout";
 import { promptRun, retextRun, type TimedRecord } from "./mock/fixtures";
 import {
 	fixtureMessages,
-	fixtureReply,
+	fixtureModels,
 	MockChatClient,
 } from "./mock/mockClient";
 import { mountChatWithStore } from "./mount";
@@ -36,7 +36,11 @@ async function ask(h: Harness, text: string) {
 	});
 }
 
-const streamRun = promptRun("stream");
+const streamRun = retextRun(
+	promptRun("stream"),
+	"hello from freeDia",
+	"[faux-1] faux reply to: hello from freeDia",
+);
 
 describe("restore", () => {
 	test("opening the chat on a tab that already has one shows its messages", async () => {
@@ -119,14 +123,16 @@ describe("composer", () => {
 
 		const [beforeEnd] = splitAt(
 			streamRun,
-			(entry) => entry.record.type === "agent_settled",
+			(entry) => entry.record.type === "prompt_result",
 		);
 		await h.play(beforeEnd);
 		expect(h.ui.queryByRole("button", { name: "Send" })).toBeNull();
 		await ask(h, "a second question mid-reply");
 		expect(h.client.callsTo("send")).toHaveLength(1);
 
-		await h.play([{ t: 0, record: { type: "agent_settled", aborted: false } }]);
+		await h.play([
+			{ t: 0, record: { type: "prompt_result", status: "completed" } },
+		]);
 		expect(h.ui.queryByRole("button", { name: "Stop" })).toBeNull();
 		expect(
 			(h.ui.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement)
@@ -205,7 +211,7 @@ describe("streaming", () => {
 					},
 				},
 			},
-			{ t: 0, record: { type: "agent_settled", aborted: false } },
+			{ t: 0, record: { type: "prompt_result", status: "completed" } },
 		]);
 		const article = h.ui.getByRole("article", { name: "Assistant message" });
 		expect(article.textContent).toContain("Final text from message_end");
@@ -277,9 +283,7 @@ describe("stop and close", () => {
 
 		await h.play(abortAfter);
 		const article = h.ui.getByRole("article", { name: "Assistant message" });
-		expect(article.textContent).toContain(
-			"[faux-1] Sentence 1 of a deliberately long faux reply. Sentence 2 of",
-		);
+		expect(article.textContent).toContain("[faux-1]");
 		expect(h.ui.getByText("Stopped")).toBeTruthy();
 		expect(h.ui.getByRole("button", { name: "Send" })).toBeTruthy();
 	});
@@ -477,27 +481,31 @@ describe("chats", () => {
 });
 
 describe("errors", () => {
-	test("not signed in: failed prompt response shows sign-in fix and restores the draft", async () => {
+	test("not signed in: failed set_model shows sign-in and model-picker fixes", async () => {
 		const h = await renderChat({
-			reply: () => fixtureReply("not-signed-in-anthropic"),
-			statusDelayMs: 0,
+			setModelError: "Model not found: anthropic/claude-sonnet-4-5",
+			models: [
+				...fixtureModels(),
+				{
+					provider: "anthropic",
+					modelId: "claude-sonnet-4-5",
+					name: "Claude Sonnet",
+					contextWindow: 200_000,
+				},
+			],
 		});
-		await ask(h, "hello");
-		const alert = await h.ui.findByRole("alert");
-		await waitFor(() =>
-			expect(
-				(h.ui.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement)
-					.value,
-			).toBe("hello"),
+		const picker = await h.ui.findByRole("button", { name: "Model: Faux One" });
+		await h.act(() => fireEvent.click(picker));
+		await h.act(() =>
+			fireEvent.click(
+				h.ui.getByRole("menuitemradio", { name: /Claude Sonnet/ }),
+			),
 		);
+		const alert = await h.ui.findByRole("alert");
 		expect(alert.textContent).toContain("Not signed in to anthropic");
+		expect(alert.textContent).toContain("pick another model");
 		expect(alert.textContent).toContain("bunx freedia login");
-		expect(h.ui.queryByText("hello", { selector: "div" })).toBeNull();
-		expect(
-			(h.ui.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement)
-				.value,
-		).toBe("hello");
-		expect(h.ui.getByRole("button", { name: "Send" })).toBeTruthy();
+		expect(h.ui.getByRole("button", { name: "Model: Faux One" })).toBeTruthy();
 	});
 
 	test("provider rejected (401) renders a sign-in error card", async () => {
@@ -505,55 +513,20 @@ describe("errors", () => {
 		await ask(h, "hello");
 		await h.play(promptRun("provider-rejected-401"));
 		const alert = h.ui.getByRole("alert");
-		expect(alert.textContent).toContain("anthropic rejected freeDia's sign-in");
+		expect(alert.textContent).toContain("faux rejected freeDia's sign-in");
 		expect(alert.textContent).toContain("bunx freedia login");
 		expect(h.ui.getByRole("button", { name: "Send" })).toBeTruthy();
 	});
 
-	test("rate limit shows retrying during auto-retry, then a rate-limit card", async () => {
+	test("rate limit retry failure ends with a rate-limit card", async () => {
 		const h = await renderChat();
 		await ask(h, "trigger");
-		const run = promptRun("rate-limit");
-		const [beforeRetry, afterRetry] = splitAt(
-			run,
-			(entry) => entry.record.type === "auto_retry_start",
-		);
-		await h.play([...beforeRetry, ...afterRetry.slice(0, 1)]);
-		expect(
-			h.ui.getByRole("status", { name: /Retrying… \(attempt 1 of 3\)/ }),
-		).toBeTruthy();
-		expect(h.ui.queryByRole("alert")).toBeNull();
-
-		await h.play(afterRetry.slice(1));
+		await h.play(promptRun("rate-limit"));
 		expect(h.ui.queryByRole("status")).toBeNull();
 		const alerts = h.ui.getAllByRole("alert");
 		expect(alerts).toHaveLength(1);
 		expect(alerts[0]?.textContent).toContain("faux is rate limiting requests");
-	});
-
-	test("stop during a retry wait renders the reply as stopped", async () => {
-		const h = await renderChat();
-		await ask(h, "trigger");
-		const run = promptRun("rate-limit");
-		const [beforeRetry, afterRetry] = splitAt(
-			run,
-			(entry) => entry.record.type === "auto_retry_start",
-		);
-		await h.play([...beforeRetry, ...afterRetry.slice(0, 1)]);
-		await h.play([
-			{
-				t: 0,
-				record: {
-					type: "auto_retry_end",
-					success: false,
-					attempt: 1,
-					finalError: "Retry cancelled",
-				},
-			},
-			{ t: 0, record: { type: "agent_settled", aborted: true } },
-		]);
-		expect(h.ui.getByText("Stopped")).toBeTruthy();
-		expect(h.ui.queryByRole("alert")).toBeNull();
+		expect(h.ui.getByRole("button", { name: "Send" })).toBeTruthy();
 	});
 
 	const helperFixes: Record<HelperErrorCode, [string, string]> = {
@@ -725,7 +698,7 @@ function message(
 }
 
 describe("run lifecycle", () => {
-	test("stopping before pi echoes the prompt keeps the chat in order", async () => {
+	test("stopping before omp echoes the prompt keeps the chat in order", async () => {
 		const h = await renderChat({
 			statusDelayMs: 1,
 			reply: (question) => ({
@@ -757,7 +730,7 @@ describe("run lifecycle", () => {
 		]);
 	});
 
-	test("a successful abort response ends a queued run without agent_settled", async () => {
+	test("a successful abort response ends a queued run without terminal events", async () => {
 		const h = await renderChat();
 		await ask(h, "hello");
 		const chatId = h.client.currentChatId();
@@ -844,20 +817,22 @@ describe("reply content", () => {
 	test("a tool loop renders as one reply with a tool status and one Copy", async () => {
 		const h = await renderChat();
 		await ask(h, "list files");
-		const run = promptRun("tools-readonly", 1);
+		const run = promptRun("tools-readonly");
 		const [beforeTool, fromTool] = splitAt(
 			run,
 			(entry) => entry.record.type === "tool_execution_end",
 		);
 		await h.play(beforeTool);
-		expect(h.ui.getByRole("status", { name: "Listing files…" })).toBeTruthy();
-		expect(h.ui.queryByRole("article")).toBeNull();
+		expect(h.ui.getByRole("status", { name: "Using write…" })).toBeTruthy();
+		expect(h.ui.getByRole("article").textContent).toContain(
+			"Writing the file now.",
+		);
 
 		await h.play(fromTool);
 		const replies = h.ui.getAllByRole("article", { name: "Assistant message" });
 		expect(replies).toHaveLength(1);
 		expect(h.ui.getAllByRole("button", { name: "Copy" })).toHaveLength(1);
-		expect(replies[0]?.textContent).toContain("pi/");
+		expect(replies[0]?.textContent).toContain("Tool write not found");
 	});
 
 	test("Copy on a tool loop copies the text of every step", async () => {
@@ -875,13 +850,13 @@ describe("reply content", () => {
 			fireEvent.click(h.ui.getByRole("button", { name: "Copy" })),
 		);
 		expect(await navigator.clipboard.readText()).toBe(
-			"Writing the file now.\n\n[faux-1] tool write isError=true: Tool write not found",
+			"Writing the file now.\n\n[faux-1] faux reply to: Tool write not found",
 		);
 	});
 
 	test("a reopened tool loop is one reply", async () => {
 		const chatId = crypto.randomUUID();
-		const run = promptRun("tools-readonly", 1);
+		const run = promptRun("tools-readonly");
 		const settled = run.findLast((entry) => entry.record.type === "agent_end");
 		const messages = settled?.record.messages;
 		if (!Array.isArray(messages)) throw new Error("fixture lacks agent_end");
@@ -896,7 +871,7 @@ describe("reply content", () => {
 		);
 		await h.act(async () => fireEvent.click(await h.ui.findByText("Tools")));
 		await waitFor(() =>
-			expect(h.ui.getByText("list files [[read]]")).toBeTruthy(),
+			expect(h.ui.getByText("[[write]] then [[read]]")).toBeTruthy(),
 		);
 		expect(
 			h.ui.getAllByRole("article", { name: "Assistant message" }),

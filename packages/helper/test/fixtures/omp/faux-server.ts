@@ -1,10 +1,14 @@
-// OpenAI-compatible mock provider for the omp spike: scripted replies keyed on
-// prompt markers, mirroring the old pi faux fixture. Run under Bun.
+import { existsSync } from "node:fs";
+
 const PORT = Number(process.env.FAUX_PORT ?? 8787);
+const LATENCY_MS = Number(process.env.FREEDIA_FAUX_LATENCY_MS ?? 0);
+const TOKEN_DELAY_MS = 1000 / Number(process.env.FREEDIA_FAUX_TPS ?? 400);
 
 interface ChatMessage {
 	role?: unknown;
 	content?: unknown;
+	name?: unknown;
+	toolName?: unknown;
 }
 
 interface ChatBody {
@@ -17,7 +21,7 @@ function textOf(message: ChatMessage): string {
 	const content = message.content;
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
-	let out = "";
+	const parts: string[] = [];
 	for (const block of content) {
 		if (
 			block !== null &&
@@ -27,10 +31,10 @@ function textOf(message: ChatMessage): string {
 			"text" in block &&
 			typeof block.text === "string"
 		) {
-			out += block.text;
+			parts.push(block.text);
 		}
 	}
-	return out;
+	return parts.join("\n");
 }
 
 function asChatMessages(messages: unknown): ChatMessage[] {
@@ -41,12 +45,13 @@ function asChatMessages(messages: unknown): ChatMessage[] {
 }
 
 const LONG_TEXT = Array.from(
-	{ length: 400 },
+	{ length: 60 },
 	(_, index) => `Sentence ${index + 1} of a deliberately long faux reply.`,
 ).join(" ");
 
 const QUESTION_HEADING = "## Question\n\n";
 const TITLE_REQUEST = "Title this chat in 8 words or fewer.";
+const PAGE_FILE = /\S*\/\.freedia\/pages\/[0-9a-f-]+\.md/;
 
 function between(text: string, start: string, ends: string[]): string | null {
 	const from = text.indexOf(start);
@@ -60,21 +65,32 @@ function between(text: string, start: string, ends: string[]): string | null {
 }
 
 function lineValue(text: string, name: string): string {
-	const match = text.match(new RegExp(`^${name}: (.*)$`, "m"));
-	return match?.[1] ?? "";
+	const prefix = `${name}: `;
+	const line = text.split("\n").find((value) => value.startsWith(prefix));
+	return line?.slice(prefix.length) ?? "";
 }
 
 function questionOf(prompt: string): string | null {
-	return between(prompt, QUESTION_HEADING, ["\n## ", "\nURL: "]);
+	const at = prompt.lastIndexOf(QUESTION_HEADING);
+	return at < 0 ? null : prompt.slice(at + QUESTION_HEADING.length).trim();
+}
+
+function questionsSoFar(messages: ChatMessage[]): string[] {
+	return messages
+		.filter((message) => message.role === "user")
+		.map((message) => questionOf(textOf(message)) ?? textOf(message));
 }
 
 function titleReply(prompt: string): string {
-	const pageTitle = lineValue(prompt, "Page title");
-	const question = questionOf(prompt) ?? "";
-	return `Title: ${pageTitle} ${question}`
-		.trim()
+	const question = lineValue(prompt, "Question")
+		.replace(/\[\[[a-z-]+\]\]/g, "")
+		.replace(/[?.!]+$/, "")
+		.trim();
+	return question
 		.split(/\s+/)
-		.slice(0, 8)
+		.filter(Boolean)
+		.slice(0, 6)
+		.map((word) => word.charAt(0).toUpperCase() + word.slice(1))
 		.join(" ");
 }
 
@@ -86,64 +102,118 @@ interface Reply {
 }
 
 function planReply(messages: ChatMessage[], model: string): Reply {
-	const last = messages[messages.length - 1];
+	const last = messages.at(-1);
 	if (!last) return { text: "[faux] empty conversation" };
 	const prompt = textOf(last);
-	if (prompt.startsWith(TITLE_REQUEST)) {
-		return { text: titleReply(prompt) };
+	if (last.role === "tool") {
+		const lower = prompt.toLowerCase();
+		const toolName =
+			last.toolName ??
+			last.name ??
+			(prompt.startsWith("#")
+				? "read"
+				: lower.includes("bash")
+					? "bash"
+					: lower.includes("write")
+						? "write"
+						: "tool");
+		return {
+			text: `[${model}] tool ${String(toolName)} isError=${/not found|error/i.test(prompt)}: ${prompt.slice(0, 300)}`,
+		};
 	}
+	if (prompt.includes(TITLE_REQUEST)) return { text: titleReply(prompt) };
 	const question = questionOf(prompt);
 	if (question !== null) {
-		const url = lineValue(prompt, "URL");
-		const title = lineValue(prompt, "Page title");
-		const turnCount = messages.filter(
-			(m) => m.role === "user" || m.role === "assistant",
-		).length;
-		return {
-			text: `[${model}] url=${url} title=${title} question=${question.slice(0, 120)} turns=${turnCount}`,
-		};
-	}
-	if (prompt.includes("[[write]]")) {
-		return {
-			text: "Writing the file now.",
-			tool: {
-				name: "write",
-				args: JSON.stringify({
-					path: "freedia-should-not-exist.txt",
-					content: "written by faux",
-				}),
-			},
-		};
-	}
-	if (prompt.includes("[[read]]")) {
-		return { tool: { name: "ls", args: JSON.stringify({ path: "." }) } };
-	}
-	if (prompt.includes("[[long]]")) {
-		return { text: `[${model}] ${LONG_TEXT}`, slow: true };
-	}
-	if (prompt.includes("[[ratelimit]]")) {
-		return {
-			error: {
-				status: 429,
-				body: {
-					type: "error",
-					error: {
-						type: "rate_limit_error",
-						message:
-							"This request would exceed your account's rate limit. Please try again later.",
+		const page = messages
+			.filter((message) => message.role === "system")
+			.map(textOf)
+			.join("\n")
+			.match(PAGE_FILE)?.[0];
+		if (question.includes("[[page]]") && page) {
+			return { tool: { name: "read", args: JSON.stringify({ path: page }) } };
+		}
+		if (question.includes("[[bash]]")) {
+			return {
+				text: "Running a command now.",
+				tool: {
+					name: "bash",
+					args: JSON.stringify({ command: "touch freedia-bash-ran" }),
+				},
+			};
+		}
+		if (question.includes("[[write]]")) {
+			return {
+				text: "Writing the file now.",
+				tool: {
+					name: "write",
+					args: JSON.stringify({
+						path: "freedia-write-ran.txt",
+						content: "written by faux",
+					}),
+				},
+			};
+		}
+		if (question.includes("[[reject]]")) {
+			return {
+				error: {
+					status: 401,
+					body: {
+						type: "error",
+						error: {
+							type: "authentication_error",
+							message: "invalid x-api-key",
+						},
 					},
 				},
-			},
-		};
-	}
-	if (prompt.includes("[[recall]]")) {
-		const turns = messages
-			.filter((m) => m.role === "user" || m.role === "assistant")
-			.map(
-				(m) => `${String(m.role)}:${JSON.stringify(textOf(m).slice(0, 40))}`,
-			);
+			};
+		}
+		if (question.includes("[[ratelimit]]")) {
+			return {
+				error: {
+					status: 429,
+					body: {
+						type: "error",
+						error: {
+							type: "rate_limit_error",
+							message:
+								"This request would exceed your account's rate limit. Please try again later.",
+						},
+					},
+				},
+			};
+		}
+		if (question.includes("[[env]]")) {
+			const keys = Object.keys(process.env).sort();
+			return {
+				text: `[${model}] env keys: ${keys.join(" ")} HOME=${process.env.HOME} PI_CODING_AGENT_DIR=${process.env.PI_CODING_AGENT_DIR} cwd=${process.cwd()}`,
+			};
+		}
+		if (question.includes("[[slow]]")) {
+			return { text: `[${model}] ${LONG_TEXT}`, slow: true };
+		}
+		const quotes = between(prompt, "## Selected text\n\n", [
+			"\n\n## Page excerpt",
+			`\n\n${QUESTION_HEADING}`,
+		]);
+		const excerpt =
+			between(prompt, "## Page excerpt\n\n", [`\n\n${QUESTION_HEADING}`]) ??
+			between(prompt, "## Page excerpt around the selected text\n\n", [
+				`\n\n${QUESTION_HEADING}`,
+			]);
+		const earlier = questionsSoFar(messages).slice(0, -1);
+		const quoteCount =
+			quotes === null ? 0 : quotes.split(/\n\n(?=> )/).filter(Boolean).length;
 		return {
-			text: `[${model}] I can see ${turns.length} turns: ${turns.join(", ")}`,
+			text: [
+				`[${model}] **${lineValue(prompt, "Title") || "This page"}**`,
+				`You asked: ${question}`,
+				`- Page: ${lineValue(prompt, "URL")}`,
+				`- Selected text: ${quoteCount}${quotes ? ` (“${quotes.replace(/^>\s?/gm, "").replace(/\n/g, " ").slice(0, 120)}”)` : ""}`,
+				`- Page excerpt: ${excerpt === null ? "none" : `${excerpt.length} characters${excerpt.includes("characters omitted") ? ", middle omitted" : ""}`}`,
+				`- Earlier questions: ${earlier.length === 0 ? "none" : earlier.map((text) => `“${text.slice(0, 60)}”`).join(", ")}`,
+				`- Earlier replies: ${messages.filter((message) => message.role === "assistant").length}`,
+				`- Page file: ${page && existsSync(page) ? "available" : "none"}`,
+			].join("\n\n"),
 		};
 	}
 	return { text: `[${model}] faux reply to: ${prompt.slice(0, 120)}` };
@@ -176,8 +246,13 @@ Bun.serve({
 		const messages = asChatMessages(body.messages);
 		const model = typeof body.model === "string" ? body.model : "unknown";
 		const reply = planReply(messages, model);
+		if (LATENCY_MS > 0) await Bun.sleep(LATENCY_MS);
 		if (reply.error) {
-			return Response.json(reply.error.body, { status: reply.error.status });
+			return Response.json(reply.error.body, {
+				status: reply.error.status,
+				headers:
+					reply.error.status === 429 ? { "retry-after": "0" } : undefined,
+			});
 		}
 		const id = completionId();
 		if (body.stream) {
@@ -238,6 +313,7 @@ Bun.serve({
 			let sent = 0;
 			const stream = new ReadableStream<Uint8Array>({
 				async pull(controller) {
+					if (sent > 0) await Bun.sleep(reply.slow ? 300 : TOKEN_DELAY_MS);
 					const encoder = new TextEncoder();
 					if (sent >= chunks.length) {
 						controller.enqueue(encoder.encode("data: [DONE]\n\n"));
@@ -246,7 +322,6 @@ Bun.serve({
 					}
 					controller.enqueue(encoder.encode(`data: ${chunks[sent]}\n\n`));
 					sent += 1;
-					if (reply.slow) await Bun.sleep(40);
 				},
 			});
 			return new Response(stream, {

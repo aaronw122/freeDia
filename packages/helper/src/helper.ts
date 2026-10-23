@@ -542,6 +542,10 @@ export class Helper {
 	): Promise<HelperError | undefined> {
 		if (!ompInstalled(this.paths))
 			return this.error("omp_missing", { id: rpc.id, chatId });
+		if (this.omp.defaultModel !== undefined) {
+			this.checkedProviders.add("authenticated");
+			return undefined;
+		}
 		if (this.checkedProviders.has("authenticated")) return undefined;
 		const records = await this.oneShot(
 			{ id: "auth", type: "get_login_providers" },

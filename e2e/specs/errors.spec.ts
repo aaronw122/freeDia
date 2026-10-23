@@ -23,7 +23,7 @@ test("ENSURE 10: no helper installed shows the Install helper card with the comm
 	}
 });
 
-test("ENSURE 10: a provider rejection from pi is shown with its fix", async ({
+test("ENSURE 10: a provider rejection from omp is shown with its fix", async ({
 	freedia,
 	site,
 }) => {

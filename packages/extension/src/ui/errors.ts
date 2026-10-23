@@ -36,6 +36,17 @@ export function helperErrorView(error: HelperError): ErrorView {
 const SIGN_IN_FIX = `Run \`${LOGIN_COMMAND}\` in Terminal to sign in, then try again.`;
 
 export function promptErrorView(message: string): ErrorView {
+	const missingModel = /^Model not found: ([^/\s]+)\/([^\s]+)\.?$/i.exec(
+		message,
+	);
+	if (missingModel) {
+		return {
+			title: `Not signed in to ${missingModel[1]}`,
+			fix: `Run \`${LOGIN_COMMAND}\` in Terminal to sign in, or pick another model below.`,
+			command: LOGIN_COMMAND,
+			detail: null,
+		};
+	}
 	const noKey = /^No API key found for (.+?)\.?(\n|$)/.exec(message);
 	if (noKey) {
 		const target = noKey[1] ?? "";
@@ -63,6 +74,17 @@ export function promptErrorView(message: string): ErrorView {
 		command: null,
 		detail: message || null,
 	};
+}
+
+export function actionErrorView(title: string, message: string): ErrorView {
+	return /^Model not found:/i.test(message)
+		? promptErrorView(message)
+		: {
+				title,
+				fix: "Try again.",
+				command: null,
+				detail: message || null,
+			};
 }
 
 const QUOTA_PATTERN =

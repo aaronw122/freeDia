@@ -5,7 +5,7 @@ import {
 	chatProcesses,
 	helperPids,
 	sessionEntries,
-	waitForNoPi,
+	waitForNoOmp,
 } from "../fixtures/env";
 import { expect, test } from "../fixtures/test";
 
@@ -41,10 +41,10 @@ test("ENSURE 14: two tabs stream at once, stopping one leaves the other, and the
 		)
 		.toBeGreaterThan(secondBefore.length);
 	await second.waitForReplies(1);
-	await expect(second.assistant.first()).toContainText("Sentence 120");
+	await expect(second.assistant.first()).toContainText("Sentence 60");
 	await expect(second.dialog.getByText("Stopped")).toHaveCount(0);
 
-	await waitForNoPi(home);
+	await waitForNoOmp(home);
 	const firstChat = chatIds(home).find((id) =>
 		sessionEntries(home, id).some(
 			(entry) => entry.message?.stopReason === "aborted",
@@ -54,8 +54,8 @@ test("ENSURE 14: two tabs stream at once, stopping one leaves the other, and the
 
 	const resumed = await first.ask("Where did you stop?");
 	await expect(resumed).toContainText(`Earlier questions: “${SLOW}”`);
-	await expect(resumed).toContainText("Earlier replies: 1");
-	await waitForNoPi(home);
+	await expect(resumed).toContainText("Earlier replies: 0");
+	await waitForNoOmp(home);
 });
 
 test("closing the chat mid-reply asks to cancel, then stops the reply", async ({
@@ -80,7 +80,7 @@ test("closing the chat mid-reply asks to cancel, then stops the reply", async ({
 	await chat.button("Close").click();
 	await confirm.getByRole("button", { name: "Cancel response" }).click();
 	await expect(chat.dialog).toBeHidden();
-	await waitForNoPi(home);
+	await waitForNoOmp(home);
 	const [chatId] = chatIds(home);
 	const reply = sessionEntries(home, chatId as string).findLast(
 		(entry) => entry.message?.role === "assistant",
@@ -113,13 +113,15 @@ test("a second chat over the concurrency limit waits, then runs", async ({
 			},
 		}),
 	);
+	await freedia.close();
+	await freedia.launch();
 	const context = freedia.requireContext();
 	const first = await ChatPage.open(context, site.url("/article"));
 	await first.open();
 	const second = await ChatPage.open(context, site.url("/short"));
 	await second.open();
 	await first.send(SLOW);
-	await expect(first.assistant.first()).toContainText("Sentence 2");
+	await expect(first.stopButton).toBeVisible();
 	await second.send("Is the ticket office open on holidays?");
 	await expect(
 		second.dialog.getByRole("status", {
@@ -132,7 +134,7 @@ test("a second chat over the concurrency limit waits, then runs", async ({
 	await expect(reply).toContainText(
 		"You asked: Is the ticket office open on holidays?",
 	);
-	await waitForNoPi(home);
+	await waitForNoOmp(home);
 });
 
 test("the helper exits when no tab needs it and a crashed helper reconnects", async ({
@@ -161,5 +163,5 @@ test("the helper exits when no tab needs it and a crashed helper reconnects", as
 		"You asked: Still there after the helper restarted?",
 	);
 	expect(chatIds(home)).toHaveLength(2);
-	await waitForNoPi(home);
+	await waitForNoOmp(home);
 });

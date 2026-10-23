@@ -13,6 +13,7 @@ interface SessionEntry {
 	title?: unknown;
 	provider?: unknown;
 	modelId?: unknown;
+	model?: unknown;
 	message?: {
 		role?: unknown;
 		content?: unknown;
@@ -103,7 +104,9 @@ export function readSession(file: string): SessionState {
 	const entries = readEntries(file);
 	const header = entries[0];
 	let name: string | undefined =
-		typeof header?.title === "string" ? header.title : undefined;
+		typeof header?.title === "string" && header.title !== ""
+			? header.title
+			: undefined;
 	let updatedAt: string | undefined;
 	let model: string | undefined;
 	let userMessages = 0;
@@ -115,12 +118,15 @@ export function readSession(file: string): SessionState {
 		) {
 			name = entry.name;
 		}
-		if (
-			entry.type === "model_change" &&
-			typeof entry.provider === "string" &&
-			typeof entry.modelId === "string"
-		) {
-			model = `${entry.provider}/${entry.modelId}`;
+		if (entry.type === "model_change") {
+			if (typeof entry.model === "string") {
+				model = entry.model;
+			} else if (
+				typeof entry.provider === "string" &&
+				typeof entry.modelId === "string"
+			) {
+				model = `${entry.provider}/${entry.modelId}`;
+			}
 		}
 		if (entry.type === "message") {
 			if (typeof entry.timestamp === "string") {
