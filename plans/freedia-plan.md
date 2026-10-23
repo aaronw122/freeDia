@@ -33,7 +33,7 @@ Decided 2026-10-23:
 
 ## Environment prerequisites
 
-- Bun ≥ 1.4 for development. omp declares `engines.bun >=1.3.14`; verified under Bun 1.4.3 (omp 18.12.1): the whole spike — five process lifecycles covering stream, resume, abort, unauthenticated `set_model`, and a blocked write tool — ran in ~6 s wall. omp also runs from inside the `bun build --compile` helper with `BUN_BE_BUN=1` (pi-equivalent path verified in S1; re-verify for omp in 3.1). omp memory per process [NOT VERIFIED] — re-measure in 3.1 (pi measured 105–140 MB RSS).
+- Bun ≥ 1.4 for development. omp declares `engines.bun >=1.3.14`; verified under Bun 1.4.3 (omp 18.12.1): the whole spike — five process lifecycles covering stream, resume, abort, unauthenticated `set_model`, and a blocked write tool — ran in ~6 s wall. omp also runs from inside the `bun build --compile` helper with `BUN_BE_BUN=1` (pi-equivalent path verified in S1; re-verified for omp in 3.1). A real omp process streaming against the faux provider measured **86,176 KiB RSS (~84 MiB)**.
 - No Node at runtime and no Node fallback: omp is Bun-native and the spike found no incompatibility.
 - omp pinned at 18.12.1. `bun add @oh-my-pi/pi-coding-agent@18.12.1` (bin `dist/cli.js`). Signed in to at least one provider for manual testing (`omp login <provider>`).
 - Chrome is not installed; Dia is. Automated tests use Playwright's bundled Chromium. Dia used for manual Cmd+E checks.
@@ -131,7 +131,7 @@ An `abort` for a chat whose prompt is still `queued` or `starting` never reaches
 | Pause / resume later                   | No warm pool. A chat's omp process exits as soon as its reply settles (`session_settled`, not `agent_end`: retries and compaction can follow `agent_end`) or is stopped. The session file stays. The next command respawns omp and re-binds with `open_session`, which reloads the full context. Respawn cost is on pi's measured order (~120–180 ms even for a 200-turn chat), small next to the model's own first-token delay, so no idle timeout. |
 | Survive browser restart                | Same as resume: sessions are files; the tab → chatId map is in `chrome.storage.local`.                                                                                                                                                          |
 
-Memory: [NOT VERIFIED for omp] (pi measured ~105–140 MB per process; re-measure in 3.1), only while a chat is generating, so at most 3 × ~140 MB ≈ 0.4 GB. Nothing stays resident between messages.
+Memory: measured **~84 MiB RSS per omp process** (86,176 KiB while streaming against the faux provider), only while a chat is generating, so at most 3 × ~84 MiB ≈ 252 MiB. Nothing stays resident between messages.
 
 ## Updates (one package, both pieces stay current)
 
@@ -240,7 +240,7 @@ Spike outcomes are folded into the Contract and the tasks below (2026-10-20). Di
 
 Buckets 1–2 were built and verified against pi 1.3.0; this bucket swaps the helper's engine to omp 18.12.1 (evidence and shapes: `notes/spike-omp-rpc.md`). User-visible behavior (ENSURE 1–14) is unchanged.
 
-- [ ] **3.1 Helper engine swap** (`packages/helper`): `pi.ts` → `omp.ts` (launch per Contract: `--mode rpc --no-ui --cwd ~/.freedia`, `--tools read,grep,glob`, clean env with `HOME=~/.freedia/home`, `--model` fresh-only); `negotiate_protocol` v2 + `rpc_chunk` reassembly; `open_session` binding; run lifecycle on `prompt_result`/`session_settled`; allowlist per the omp command set (`bash` still blocked — verified executing); `chats.ts` enumerates per-chat directories, reads the header title slot, deletes directories; titles via one-shot `omp -p --no-session --no-title`; preflight `not_signed_in` via `get_login_providers`; `helper.hello` reports `ompVersion`; installer installs `@oh-my-pi/pi-coding-agent@18.12.1` into `~/.freedia/omp` and creates `~/.freedia/home`; `FREEDIA_OMP_EXTRA_ARGS` test hook. omp fixtures regenerated from the spike (`packages/helper/test/fixtures/omp/`), faux provider = local OpenAI-compatible server + `models.yml`. Tests updated to the new launch/allowlist/session-layout expectations.
+- [x] **3.1 Helper engine swap** (`packages/helper`): `pi.ts` → `omp.ts` (launch per Contract: `--mode rpc --no-ui --cwd ~/.freedia`, `--tools read,grep,glob`, clean env with `HOME=~/.freedia/home`, `--model` fresh-only); `negotiate_protocol` v2 + `rpc_chunk` reassembly; `open_session` binding; run lifecycle on `prompt_result`/`session_settled`; allowlist per the omp command set (`bash` still blocked — verified executing); `chats.ts` enumerates per-chat directories, reads the header title slot, deletes directories; titles via one-shot `omp -p --no-session --no-title`; preflight `not_signed_in` via `get_login_providers`; `helper.hello` reports `ompVersion`; installer installs `@oh-my-pi/pi-coding-agent@18.12.1` into `~/.freedia/omp` and creates `~/.freedia/home`; `FREEDIA_OMP_EXTRA_ARGS` test hook. omp fixtures regenerated from the spike (`packages/helper/test/fixtures/omp/`), faux provider = local OpenAI-compatible server + `models.yml`. Tests updated to the new launch/allowlist/session-layout expectations.
 - [ ] **3.2 Extension adjustments**: error mapping (`Model not found` on `set_model`, `prompt_result { status: "error" }`), stop-button lifecycle (`abort` response → `prompt_result` → `session_settled`), unknown frame types ignored (already the case). No UI redesign.
 - [ ] **3.3 E2E**: faux server fixture + `models.yml` in the e2e agent dir, updated launch-flag and readonly specs, full `bun run e2e` + `bun run demo`.
 - [ ] **3.4 Docs**: README/CHANGELOG updated for omp; omp memory figures measured and recorded in the Contract.
@@ -274,7 +274,7 @@ Buckets 1–2 were built and verified against pi 1.3.0; this bucket swaps the he
 - **Native messaging on macOS**: Chrome launches the host with a minimal PATH → manifest points to the absolute binary path; omp path resolved at install time.
 - **Helper lifetime**: Chrome closes the helper's stdin when the service worker's port drops → in-flight replies could be cut. Service worker keeps the port open while any chat is running; helper finishes in-flight runs before exiting.
 - **omp under Bun** is its documented path (`engines.bun >=1.3.14`); the spike found no incompatibility (plain Bun; compiled-helper spawn re-verified in 3.1). An omp upgrade must re-run the spike recorder before shipping.
-- **Memory** [NOT VERIFIED for omp] (pi measured 105–140 MB per process) → re-measure in 3.1; only while generating; max 3 at once.
+- **Memory** measured at **86,176 KiB RSS (~84 MiB) per omp process** while streaming against the faux provider; only while generating; max 3 at once (~252 MiB).
 - **Provider keys in the environment** → omp would pick up shell keys and `.env` files; the helper starts omp with a clean environment and `HOME=~/.freedia/home` (Contract).
 - **Model picker needs an omp process** for `get_available_models` when no chat is running → helper spawns a short-lived one and caches the list for the session.
 - **Compiled binary size** (~60 MB per platform) → acceptable for a one-time install.
